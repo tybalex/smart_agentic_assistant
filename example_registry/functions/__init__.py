@@ -8,7 +8,17 @@ from .google_services import (
     google_sheets_append,
     google_sheets_read,
     google_groups_add_member,
-    gmail_send_email
+    google_groups_list_members,
+    gmail_send_email,
+    gmail_list_emails,
+    google_receive_membership_email
+)
+
+# Mailing List
+from .mailing_list import (
+    get_mailing_list,
+    add_to_mailing_list,
+    remove_from_mailing_list
 )
 
 # Salesforce
@@ -21,14 +31,24 @@ from .salesforce import (
 from .slack import (
     slack_invite_to_channel,
     slack_send_message,
-    slack_create_channel
+    slack_create_channel,
+    slack_list_channels,
+    slack_get_channel_info,
+    slack_remove_user_from_channel,
+    slack_list_messages,
+    slack_list_users,
+    slack_get_user_info
 )
 
 # GitHub
 from .github import (
     github_create_branch,
     github_commit_file,
-    github_create_pr
+    github_create_pr,
+    github_list_branches,
+    github_list_prs,
+    github_get_file,
+    github_merge_pr
 )
 
 # Email (Mailchimp)
@@ -117,21 +137,39 @@ FUNCTION_MAP = {
     "google_sheets_append": google_sheets_append,
     "google_sheets_read": google_sheets_read,
     "google_groups_add_member": google_groups_add_member,
+    "google_groups_list_members": google_groups_list_members,
     "gmail_send_email": gmail_send_email,
+    "gmail_list_emails": gmail_list_emails,
+    "google_receive_membership_email": google_receive_membership_email,
     
     # Salesforce
     "salesforce_query": salesforce_query,
     "salesforce_create": salesforce_create,
     
+    # Mailing List
+    "get_mailing_list": get_mailing_list,
+    "add_to_mailing_list": add_to_mailing_list,
+    "remove_from_mailing_list": remove_from_mailing_list,
+    
     # Slack
     "slack_invite_to_channel": slack_invite_to_channel,
     "slack_send_message": slack_send_message,
     "slack_create_channel": slack_create_channel,
+    "slack_list_channels": slack_list_channels,
+    "slack_get_channel_info": slack_get_channel_info,
+    "slack_remove_user_from_channel": slack_remove_user_from_channel,
+    "slack_list_messages": slack_list_messages,
+    "slack_list_users": slack_list_users,
+    "slack_get_user_info": slack_get_user_info,
     
     # GitHub
     "github_create_branch": github_create_branch,
     "github_commit_file": github_commit_file,
     "github_create_pr": github_create_pr,
+    "github_list_branches": github_list_branches,
+    "github_list_prs": github_list_prs,
+    "github_get_file": github_get_file,
+    "github_merge_pr": github_merge_pr,
     
     # Email
     "mailchimp_add_subscriber": mailchimp_add_subscriber,
@@ -208,7 +246,15 @@ __all__ = [
     "google_sheets_append",
     "google_sheets_read",
     "google_groups_add_member",
+    "google_groups_list_members",
     "gmail_send_email",
+    "gmail_list_emails",
+    "google_receive_membership_email",
+    
+    # Mailing List
+    "get_mailing_list",
+    "add_to_mailing_list",
+    "remove_from_mailing_list",
     
     # Salesforce
     "salesforce_query",
@@ -218,11 +264,21 @@ __all__ = [
     "slack_invite_to_channel",
     "slack_send_message",
     "slack_create_channel",
+    "slack_list_channels",
+    "slack_get_channel_info",
+    "slack_remove_user_from_channel",
+    "slack_list_messages",
+    "slack_list_users",
+    "slack_get_user_info",
     
     # GitHub
     "github_create_branch",
     "github_commit_file",
     "github_create_pr",
+    "github_list_branches",
+    "github_list_prs",
+    "github_get_file",
+    "github_merge_pr",
     
     # Email
     "mailchimp_add_subscriber",
