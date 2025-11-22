@@ -18,7 +18,17 @@ from .google_services import (
 from .mailing_list import (
     get_mailing_list,
     add_to_mailing_list,
-    remove_from_mailing_list
+    remove_from_mailing_list,
+    list_all_mailing_lists,
+    create_mailing_list
+)
+
+# Member Desk
+from .member_desk import (
+    member_desk_invite,
+    member_desk_list_invitations,
+    member_desk_accept_invitation,
+    member_desk_get_invitation_status
 )
 
 # Salesforce
@@ -150,6 +160,14 @@ FUNCTION_MAP = {
     "get_mailing_list": get_mailing_list,
     "add_to_mailing_list": add_to_mailing_list,
     "remove_from_mailing_list": remove_from_mailing_list,
+    "list_all_mailing_lists": list_all_mailing_lists,
+    "create_mailing_list": create_mailing_list,
+    
+    # Member Desk
+    "member_desk_invite": member_desk_invite,
+    "member_desk_list_invitations": member_desk_list_invitations,
+    "member_desk_accept_invitation": member_desk_accept_invitation,
+    "member_desk_get_invitation_status": member_desk_get_invitation_status,
     
     # Slack
     "slack_invite_to_channel": slack_invite_to_channel,
@@ -255,6 +273,14 @@ __all__ = [
     "get_mailing_list",
     "add_to_mailing_list",
     "remove_from_mailing_list",
+    "list_all_mailing_lists",
+    "create_mailing_list",
+    
+    # Member Desk
+    "member_desk_invite",
+    "member_desk_list_invitations",
+    "member_desk_accept_invitation",
+    "member_desk_get_invitation_status",
     
     # Salesforce
     "salesforce_query",

@@ -75,18 +75,20 @@ def google_groups_add_member(group_id: str, member_email: str, role: str) -> str
     return f"Added {member_email} to {group_id} as {role}"
 
 # In-memory mock of Gmail emails
-# Structure: [{to: str, subject: str, body: str, attachments: list}]
+# Structure: [{to: str, subject: str, body: str, cc: list, attachments: list}]
 _mock_emails = []
 
-def gmail_send_email(to: str, subject: str, body: str, attachments: list = None) -> str:
+def gmail_send_email(to: str, subject: str, body: str, cc: list = None, attachments: list = None) -> str:
     """Send an email via Gmail API"""
     _mock_emails.append({
         "to": to,
         "subject": subject,
         "body": body,
+        "cc": cc or [],
         "attachments": attachments
     })
-    return f"Sent email to {to} with subject {subject} and body {body}"
+    cc_info = f" (CC: {', '.join(cc)})" if cc else ""
+    return f"Sent email to {to}{cc_info} with subject '{subject}'"
 
 def gmail_list_emails() -> str:
     """List all emails"""
