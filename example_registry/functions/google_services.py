@@ -76,7 +76,24 @@ def google_groups_add_member(group_id: str, member_email: str, role: str) -> str
 
 # In-memory mock of Gmail emails
 # Structure: [{to: str, subject: str, body: str, cc: list, attachments: list}]
-_mock_emails = []
+_mock_emails = [
+    {
+        "from": "admin1@example.com",
+        "to": "member2@example.com",
+        "subject": "Test email",
+        "body": "This is a test email",
+        "cc": [],
+        "attachments": []
+    },
+    {
+        "from": "admin2@example.com",
+        "to": "member3@example.com",
+        "subject": "Test email",
+        "body": "This is a test email",
+        "cc": [],
+        "attachments": []
+    }
+]
 
 def gmail_send_email(to: str, subject: str, body: str, cc: list = None, attachments: list = None) -> str:
     """Send an email via Gmail API"""
