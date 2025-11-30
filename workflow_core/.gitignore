@@ -1,0 +1,25 @@
+# Python
+*.pyc
+__pycache__/
+**/__pycache__/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Workflow files (user-created)
+*.yaml
+!**/examples/*.yaml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
