@@ -182,6 +182,7 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
     
     async def validate(self, workflow: WorkflowDefinition) -> Dict[str, Any]:
         """Validate the workflow"""
+        import re
         errors = []
         warnings = []
         
@@ -199,6 +200,41 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
         for node in workflow.nodes:
             if not self.handler_registry.has_handler(node.type):
                 warnings.append(f"Node type '{node.type}' may not be supported")
+        
+        # Check for variable reference issues
+        node_ids = {node.id for node in workflow.nodes}
+        conditional_nodes = {node.id for node in workflow.nodes if node.condition}
+        
+        for node in workflow.nodes:
+            # Find all {{variable}} references in the node config
+            config_str = str(node.config)
+            var_pattern = r'\{\{([^}]+)\}\}'
+            var_matches = re.findall(var_pattern, config_str)
+            
+            for var_ref in var_matches:
+                var_ref = var_ref.strip()
+                parts = var_ref.split('.')
+                referenced_node = parts[0]
+                
+                # Check if referenced node exists
+                if referenced_node not in workflow.variables and referenced_node not in node_ids:
+                    errors.append(
+                        f"Node '{node.id}' references undefined variable/node: {{{{'{var_ref}'}}}}"
+                    )
+                
+                # Check if referenced node is conditional (might be skipped)
+                elif referenced_node in conditional_nodes:
+                    # Check if the current node depends on the conditional node
+                    if referenced_node not in (node.depends_on or []):
+                        warnings.append(
+                            f"Node '{node.id}' references conditional node '{referenced_node}' without depending on it. "
+                            f"If '{referenced_node}' is skipped, this variable will be undefined."
+                        )
+                    else:
+                        warnings.append(
+                            f"Node '{node.id}' references conditional node '{referenced_node}' which may be skipped. "
+                            f"Consider handling the case where '{referenced_node}' doesn't execute."
+                        )
         
         return {
             "is_valid": len(errors) == 0,
@@ -224,6 +260,9 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
         """Replace {{variable}} references with actual values"""
         import re
         
+        # Track unresolved variables for warnings
+        unresolved_vars = []
+        
         def resolve_variable_path(var_path: str):
             """Resolve a dot-notated variable path to its value"""
             parts = var_path.split('.')
@@ -233,6 +272,7 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                 value = context.node_results[parts[0]]
                 for part in parts[1:]:
                     if value is None:
+                        unresolved_vars.append(var_path)
                         return None
                     if isinstance(value, dict):
                         value = value.get(part)
@@ -245,6 +285,7 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                 value = context.variables[parts[0]]
                 for part in parts[1:]:
                     if value is None:
+                        unresolved_vars.append(var_path)
                         return None
                     if isinstance(value, dict):
                         value = value.get(part)
@@ -252,6 +293,8 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                         value = getattr(value, part, None)
                 return value
             
+            # Variable not found
+            unresolved_vars.append(var_path)
             return None
         
         def resolve_value(obj):
@@ -293,7 +336,14 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                 return obj
         
         try:
-            return resolve_value(config)
+            resolved_config = resolve_value(config)
+            
+            # Warn about unresolved variables
+            if unresolved_vars:
+                unique_unresolved = list(set(unresolved_vars))
+                print(f"  ⚠️  Warning: {len(unique_unresolved)} unresolved variable(s): {', '.join(unique_unresolved)}")
+            
+            return resolved_config
         except Exception as e:
             # If resolution fails, return original config
             print(f"  ⚠️  Error resolving variables: {e}")

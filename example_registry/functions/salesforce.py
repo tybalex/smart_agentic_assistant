@@ -33,12 +33,25 @@ def salesforce_query(query: str) -> str:
     - SELECT * FROM ObjectType
     - SELECT field1, field2 FROM ObjectType
     - SELECT * FROM ObjectType WHERE field = 'value'
+    - SELECT * FROM ObjectType WHERE field = 'value' LIMIT n
     """
     query = query.strip()
     
     # Simple SOQL parser (very basic)
     if "FROM" not in query.upper():
         return json.dumps({"error": "Invalid SOQL query"})
+    
+    # Extract LIMIT clause if present
+    limit = None
+    if "LIMIT" in query.upper():
+        limit_parts = query.upper().split("LIMIT")
+        if len(limit_parts) == 2:
+            try:
+                limit = int(limit_parts[1].strip().split()[0])
+                # Remove LIMIT clause from query for further processing
+                query = query[:query.upper().index("LIMIT")].strip()
+            except (ValueError, IndexError):
+                pass
     
     # Extract object type
     parts = query.upper().split("FROM")
@@ -69,6 +82,10 @@ def salesforce_query(query: str) -> str:
             value = value.strip().strip("'\"")
             
             records = [r for r in records if str(r.get(field, "")) == value]
+    
+    # Apply LIMIT if specified
+    if limit is not None and limit > 0:
+        records = records[:limit]
     
     return json.dumps({
         "totalSize": len(records),

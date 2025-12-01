@@ -5,8 +5,8 @@ Execute any workflow YAML file and see detailed output of each step.
 This is useful for testing and debugging workflows.
 
 Usage:
-    python examples/run_workflow.py workflow.yaml
-    python examples/run_workflow.py member_onboarding.yaml
+    python run_workflow.py workflow.yaml
+    python run_workflow.py member_onboarding.yaml
 """
 
 import sys
@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from src.schema import WorkflowDefinition
 from src.runtime import SimpleWorkflowExecutor
@@ -276,9 +276,9 @@ def main():
         print("  var1=value1 var2=value2    Set variables via command line")
         print("  --config <file.json>       Load variables from JSON/YAML config file")
         print("\nExamples:")
-        print("  python examples/run_workflow.py member_onboarding.yaml")
-        print("  python examples/run_workflow.py member_onboarding.yaml member_name='Acme Corp'")
-        print("  python examples/run_workflow.py member_onboarding.yaml --config config.json")
+        print("  python run_workflow.py member_onboarding.yaml")
+        print("  python run_workflow.py member_onboarding.yaml member_name='Acme Corp'")
+        print("  python run_workflow.py member_onboarding.yaml --config config.json")
         sys.exit(1)
     
     workflow_file = sys.argv[1]

@@ -257,20 +257,27 @@ class WorkflowTools:
     
     # ==================== Execution & Testing Tools ====================
     
-    def run_workflow(self, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def run_workflow(self, variables: Optional[Dict[str, Any]] = None, filename: Optional[str] = None) -> Dict[str, Any]:
         """
         Execute the current workflow.
         
         Args:
             variables: Optional runtime variables
+            filename: Optional workflow file to load and execute (reloads from disk)
         
         Returns:
             Execution results
         """
+        # If filename provided, reload the workflow from disk first
+        if filename:
+            load_result = self.read_workflow(filename)
+            if load_result.get("status") != "success":
+                return load_result
+        
         if not self.current_workflow:
             return {
                 "status": "error",
-                "message": "No workflow loaded."
+                "message": "No workflow loaded. Either load a workflow first or provide a filename."
             }
         
         try:
@@ -404,7 +411,7 @@ class WorkflowTools:
         
         Args:
             category: Filter by category (e.g., 'google', 'aws', 'notion')
-            status: Filter by status ('implemented', 'mock', 'todo')
+            status: Filter by status ('implemented', 'todo')
             search: Search term to filter functions by name or description
         
         Returns:
@@ -542,10 +549,14 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "run_workflow",
-        "description": "Execute the current workflow and get results. Use this to test if the workflow works.",
+        "description": "Execute the current workflow and get results. Use this to test if the workflow works. If a filename is provided, it will reload the workflow from disk first (useful if the file was edited).",
         "input_schema": {
             "type": "object",
             "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Optional workflow filename to reload from disk before running (e.g., 'sample_workflow.yaml'). Use this if the file was edited outside of the agent."
+                },
                 "variables": {
                     "type": "object",
                     "description": "Optional runtime variables to pass to the workflow"
@@ -593,8 +604,8 @@ TOOL_DEFINITIONS = [
                 },
                 "status": {
                     "type": "string",
-                    "description": "Filter by status: 'implemented', 'mock', or 'todo'",
-                    "enum": ["implemented", "mock", "todo"]
+                    "description": "Filter by status: 'implemented' or 'todo'",
+                    "enum": ["implemented", "todo"]
                 },
                 "search": {
                     "type": "string",

@@ -53,7 +53,33 @@ python examples/agentic_demo.py
 
 # Interactive CLI - just chat with the agent!
 python examples/interactive_cli.py
+
+# NEW: Visual workflow editor (Stage 1: View Mode)
+python run_ui.py
+# or
+streamlit run ui/app.py
 ```
+
+### 🎨 Workflow Visualizer UI (NEW!)
+
+A clean, interactive web interface for viewing and working with workflows:
+
+```bash
+# Install UI dependencies
+pip install -e ".[ui]"
+
+# Launch the visualizer
+python run_ui.py
+```
+
+**Features:**
+- 📋 Load and view workflow YAML files
+- 🔍 Inspect node details, dependencies, and configuration
+- 📊 See execution order (topological sort)
+- 🎯 Clean card-based layout for each node
+- 🚧 Coming Soon: Edit nodes and run them individually!
+
+See [ui/README.md](ui/README.md) for detailed documentation.
 
 ## 📖 How It Works
 

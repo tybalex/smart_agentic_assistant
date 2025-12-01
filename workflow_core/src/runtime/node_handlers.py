@@ -9,18 +9,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 import asyncio
 import json
-import random
 
 from ..schema import ExecutionContext
-
-# Try to import functions_registry, but make it optional
-try:
-    from ..functions_registry import get_function, FunctionStatus
-    HAS_FUNCTIONS_REGISTRY = True
-except ImportError:
-    HAS_FUNCTIONS_REGISTRY = False
-    get_function = None
-    FunctionStatus = None
 
 
 class NodeHandler(ABC):
@@ -45,7 +35,7 @@ class FunctionCallHandler(NodeHandler):
         self.workflow_tools = workflow_tools
     
     async def execute(self, config: Dict[str, Any], context: ExecutionContext) -> Any:
-        """Execute a registered function"""
+        """Execute a registered function via the functions registry at localhost:9999"""
         function_name = config.get("function_name")
         parameters = config.get("parameters", {})
         
@@ -54,7 +44,7 @@ class FunctionCallHandler(NodeHandler):
                 "error": "No function_name specified in config"
             }
         
-        # Check if function_name is a TODO
+        # Check if function_name is a TODO marker
         if function_name.startswith("TODO:"):
             return {
                 "status": "todo",
@@ -62,7 +52,7 @@ class FunctionCallHandler(NodeHandler):
                 "action_required": "Implement this function or use http_request as fallback"
             }
         
-        # First, try to call from WorkflowTools if available
+        # First, try to call from WorkflowTools if available (for built-in workflow tools)
         if self.workflow_tools and hasattr(self.workflow_tools, function_name):
             try:
                 print(f"  🔧 Calling WorkflowTools.{function_name}")
@@ -74,7 +64,8 @@ class FunctionCallHandler(NodeHandler):
                     "error": f"Error calling {function_name}: {str(e)}"
                 }
         
-        # Try to execute via HTTP request to function registry at localhost:9999
+        # Call the function registry at localhost:9999
+        # This is the main execution path for all external functions
         try:
             import httpx
             print(f"  🌐 Calling function registry: {function_name}")
@@ -88,6 +79,26 @@ class FunctionCallHandler(NodeHandler):
             func_data = func_response.json()
             category = func_data.get('category', 'unknown')
             
+            # Check if function is configured (not TODO or MOCK status)
+            status = func_data.get('status', 'unknown')
+            if status in ['todo', 'TODO']:
+                return {
+                    "error": f"Function '{function_name}' is not yet implemented",
+                    "status": "todo",
+                    "function": function_name,
+                    "message": f"This function is registered but not implemented yet.",
+                    "action_required": "Implement this function in the registry or use http_request as fallback"
+                }
+            
+            if status in ['mock', 'MOCK']:
+                return {
+                    "error": f"Function '{function_name}' is not configured",
+                    "status": "configuration_required",
+                    "function": function_name,
+                    "message": f"This function requires API credentials or configuration to work.",
+                    "action_required": "Configure this function with proper API credentials/settings in the function registry"
+                }
+            
             # Make POST request to execute the function using /{category}/{function_name}
             response = httpx.post(
                 f"http://localhost:9999/{category}/{function_name}",
@@ -97,64 +108,54 @@ class FunctionCallHandler(NodeHandler):
             response.raise_for_status()
             result = response.json()
             
+            # Parse the result field if it's a JSON string
+            # Function registry returns: {"result": "{\"key\": \"value\"}", "success": true}
+            # We want to return the parsed result directly so {{node.field}} references work
+            if isinstance(result, dict) and 'result' in result:
+                result_value = result['result']
+                # Try to parse if it's a JSON string
+                if isinstance(result_value, str):
+                    try:
+                        parsed_result = json.loads(result_value)
+                        print(f"  ✅ Function executed successfully")
+                        return parsed_result
+                    except json.JSONDecodeError:
+                        # Not valid JSON, return as-is
+                        print(f"  ✅ Function executed successfully")
+                        return result
+                else:
+                    # result is already parsed
+                    print(f"  ✅ Function executed successfully")
+                    return result_value
+            
             print(f"  ✅ Function executed successfully")
             return result
             
-        except httpx.HTTPError as e:
-            print(f"  ❌ HTTP error calling function registry: {e}")
-            # Continue to fallback options
-            pass
+        except httpx.ConnectError as e:
+            print(f"  ❌ Cannot connect to function registry at localhost:9999: {e}")
+            return {
+                "error": f"Function registry not available at localhost:9999",
+                "message": "Cannot connect to the function registry service. Please ensure it's running.",
+                "function": function_name,
+                "action_required": "Start the function registry service at localhost:9999 or use http_request for direct API calls"
+            }
+        
+        except httpx.HTTPStatusError as e:
+            print(f"  ❌ HTTP error calling function registry: {e.response.status_code}")
+            error_detail = e.response.text
+            return {
+                "error": f"Function '{function_name}' execution failed",
+                "status_code": e.response.status_code,
+                "detail": error_detail,
+                "function": function_name
+            }
+        
         except Exception as e:
-            print(f"  ⚠️  Error calling function registry: {e}")
-            # Continue to fallback options
-            pass
-        
-        # Fallback to local functions registry if available
-        if HAS_FUNCTIONS_REGISTRY and get_function:
-            func = get_function(function_name)
-            
-            if not func:
-                return {
-                    "error": f"Function '{function_name}' not found in registry or WorkflowTools",
-                    "suggestion": "Use 'http_request' function for custom API calls or add function to registry"
-                }
-            
-            # Check function status
-            if func.status == FunctionStatus.TODO:
-                return {
-                    "status": "todo",
-                    "function": function_name,
-                    "message": f"Function '{function_name}' is registered but not yet implemented",
-                    "parameters_needed": list(func.parameters.keys()),
-                    "action_required": "Implement this function or use http_request as fallback"
-                }
-            
-            elif func.status == FunctionStatus.MOCK:
-                # Return mock response (with randomization if available)
-                print(f"  🧪 Mock function: {function_name}")
-                mock_data = func.get_mock_response()
-                return {
-                    "status": "success",
-                    "function": function_name,
-                    "mock": True,
-                    **mock_data
-                }
-            
-            elif func.status == FunctionStatus.IMPLEMENTED:
-                # Call actual implementation
-                # TODO: Implement actual function execution
-                print(f"  ✅ Executing function: {function_name}")
-                return {
-                    "status": "success",
-                    "function": function_name,
-                    "result": "Function executed successfully"
-                }
-        
-        # If we get here, function not found anywhere
-        return {
-            "error": f"Function '{function_name}' not found",
-            "suggestion": "Add function to WorkflowTools or functions registry"
-        }
+            print(f"  ❌ Error calling function registry: {e}")
+            return {
+                "error": f"Function '{function_name}' execution failed: {str(e)}",
+                "function": function_name
+            }
 
 
 class APICallHandler(NodeHandler):
@@ -212,35 +213,9 @@ class TransformHandler(NodeHandler):
                 return eval(expression, {"input": input_data, "context": context})
                 
         except Exception as e:
-            # If evaluation fails (e.g., JavaScript syntax), return mock data
-            print(f"  🧪 Mock transform (expression evaluation failed: {type(e).__name__})")
-            
-            # Generate reasonable mock data based on operation type
-            if operation == "custom":
-                # For custom operations, return a mock structure
-                return {
-                    "contacts_with_assignments": [
-                        {
-                            "email": f"contact{i+1}@example.com",
-                            "name": f"Mock Contact {i+1}",
-                            "title": random.choice(["Engineer", "Manager", "Director"]),
-                            "mailing_lists": [f"list_{random.randint(1,5)}"],
-                            "slack_channels": [f"C{random.randint(10000,99999)}"]
-                        }
-                        for i in range(random.randint(2, 5))
-                    ],
-                    "all_contact_emails": [f"contact{i+1}@example.com" for i in range(random.randint(2, 5))],
-                    "mock": True
-                }
-            elif operation == "map":
-                # Return mock mapped data
-                return [f"transformed_item_{i}" for i in range(random.randint(2, 5))]
-            elif operation == "filter":
-                # Return mock filtered data
-                return [f"filtered_item_{i}" for i in range(random.randint(1, 3))]
-            else:
-                # Generic mock data
-                return {"mock": True, "operation": operation, "status": "mocked"}
+            # If evaluation fails, raise the error - don't use mock data
+            print(f"  ❌ Transform expression evaluation failed: {type(e).__name__}: {str(e)}")
+            raise RuntimeError(f"Transform expression evaluation failed: {str(e)}. Please check your expression syntax and ensure all variables are available.")
 
 
 class ConditionHandler(NodeHandler):
