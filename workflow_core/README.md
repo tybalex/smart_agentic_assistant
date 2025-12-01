@@ -77,7 +77,12 @@ python run_ui.py
 - 🔍 Inspect node details, dependencies, and configuration
 - 📊 See execution order (topological sort)
 - 🎯 Clean card-based layout for each node
-- 🚧 Coming Soon: Edit nodes and run them individually!
+- ✏️ Edit nodes inline with JSON validation
+- ➕ Add and remove nodes dynamically
+- 💾 Export modified workflows to YAML
+- ▶️ **NEW:** Run individual nodes (Jupyter-style!)
+- ✅ **NEW:** See real-time execution results
+- 🔗 **NEW:** Chain node executions with context
 
 See [ui/README.md](ui/README.md) for detailed documentation.
 
