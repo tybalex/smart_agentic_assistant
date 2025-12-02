@@ -53,8 +53,10 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
     ) -> WorkflowExecutionResult:
         """Execute the workflow"""
         
-        # Validate first
+        # Validate first and collect warnings
         validation = await self.validate(workflow)
+        execution_warnings = validation.get("warnings", [])
+        
         if not validation["is_valid"]:
             return WorkflowExecutionResult(
                 workflow_id=workflow.metadata.name,
@@ -64,7 +66,8 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                 start_time=datetime.now().isoformat(),
                 end_time=datetime.now().isoformat(),
                 total_duration=0.0,
-                error=f"Workflow validation failed: {validation['errors']}"
+                error=f"Workflow validation failed: {validation['errors']}",
+                warnings=execution_warnings
             )
         
         # Setup execution context
@@ -92,6 +95,8 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                         status="skipped",
                         output=None
                     )
+                    # Store None in context so other nodes can reference it without error
+                    context.node_results[node.id] = None
                     continue
                 
                 # Execute the node
@@ -142,7 +147,8 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                 node_results=node_results,
                 start_time=start_time.isoformat(),
                 end_time=end_time.isoformat(),
-                total_duration=(end_time - start_time).total_seconds()
+                total_duration=(end_time - start_time).total_seconds(),
+                warnings=execution_warnings
             )
             
         except Exception as e:
@@ -155,7 +161,8 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                 start_time=start_time.isoformat(),
                 end_time=end_time.isoformat(),
                 total_duration=(end_time - start_time).total_seconds(),
-                error=str(e)
+                error=str(e),
+                warnings=execution_warnings
             )
     
     async def execute_node(
@@ -213,6 +220,11 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
             
             for var_ref in var_matches:
                 var_ref = var_ref.strip()
+                
+                # Strip any filters (e.g., "customer_email | replace('@', '-')" -> "customer_email")
+                if '|' in var_ref:
+                    var_ref = var_ref.split('|')[0].strip()
+                
                 parts = var_ref.split('.')
                 referenced_node = parts[0]
                 
@@ -252,8 +264,20 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
         try:
             # Replace variables in condition
             condition = self._resolve_variables({"expr": node.condition}, context)["expr"]
-            return bool(eval(condition))  # Warning: eval is dangerous, use safe evaluator in production
-        except:
+            
+            # Debug: print the resolved condition
+            print(f"  🔍 Evaluating condition for '{node.id}': {condition}")
+            
+            result = bool(eval(condition))  # Warning: eval is dangerous, use safe evaluator in production
+            
+            print(f"  ➡️ Condition result: {result} → {'Execute' if result else 'Skip'}")
+            return result
+            
+        except Exception as e:
+            # Don't silently fail! Log the error
+            print(f"  ⚠️ WARNING: Condition evaluation failed for '{node.id}': {e}")
+            print(f"  ⚠️ Original condition: {node.condition}")
+            print(f"  ⚠️ Defaulting to EXECUTE (this might not be what you want!)")
             return True  # If condition can't be evaluated, execute the node
     
     def _resolve_variables(self, config: Dict[str, Any], context: ExecutionContext) -> Dict[str, Any]:
@@ -263,8 +287,80 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
         # Track unresolved variables for warnings
         unresolved_vars = []
         
+        def apply_filter(value, filter_name: str):
+            """Apply a Jinja2-style filter to a value"""
+            filter_name = filter_name.strip()
+            
+            # Common filters
+            if filter_name == "length" or filter_name == "count":
+                if value is None:
+                    return 0
+                try:
+                    return len(value)
+                except:
+                    return 0
+            
+            elif filter_name == "upper":
+                return str(value).upper() if value is not None else ""
+            
+            elif filter_name == "lower":
+                return str(value).lower() if value is not None else ""
+            
+            elif filter_name == "trim" or filter_name == "strip":
+                return str(value).strip() if value is not None else ""
+            
+            elif filter_name == "first":
+                if value and hasattr(value, '__getitem__'):
+                    return value[0] if len(value) > 0 else None
+                return None
+            
+            elif filter_name == "last":
+                if value and hasattr(value, '__getitem__'):
+                    return value[-1] if len(value) > 0 else None
+                return None
+            
+            elif filter_name.startswith("replace("):
+                # Handle replace(old, new) filter
+                # Example: replace('@', '-') or replace("@", "-")
+                match = re.match(r'replace\(["\']([^"\']*)["\'],\s*["\']([^"\']*)["\']', filter_name)
+                if match:
+                    old_str = match.group(1)
+                    new_str = match.group(2)
+                    return str(value).replace(old_str, new_str) if value is not None else ""
+                return str(value) if value is not None else ""
+            
+            elif filter_name == "default" or filter_name.startswith("default("):
+                # Handle default(value) filter
+                if value is not None and value != "":
+                    return value
+                # Extract default value from filter
+                match = re.match(r'default\(["\']?([^"\']+)["\']?\)', filter_name)
+                if match:
+                    return match.group(1)
+                return ""
+            
+            else:
+                # Unknown filter, return value as-is
+                return value
+        
         def resolve_variable_path(var_path: str):
-            """Resolve a dot-notated variable path to its value"""
+            """Resolve a dot-notated variable path to its value, with Jinja2 filter support"""
+            # Check for pipe filters (e.g., "records | length")
+            if "|" in var_path:
+                parts = var_path.split("|", 1)
+                base_path = parts[0].strip()
+                filter_expr = parts[1].strip()
+                
+                # Resolve the base path first
+                value = resolve_variable_path(base_path)
+                
+                # Apply filters (can be chained)
+                for filter_part in filter_expr.split("|"):
+                    value = apply_filter(value, filter_part)
+                
+                return value
+            
+            # Original logic for dot notation
             parts = var_path.split('.')
             
             # Check node results
@@ -338,14 +434,19 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
         try:
             resolved_config = resolve_value(config)
             
-            # Warn about unresolved variables
+            # Error if variables can't be resolved (instead of just warning)
             if unresolved_vars:
                 unique_unresolved = list(set(unresolved_vars))
-                print(f"  ⚠️  Warning: {len(unique_unresolved)} unresolved variable(s): {', '.join(unique_unresolved)}")
+                error_msg = f"Cannot resolve {len(unique_unresolved)} variable(s): {', '.join(unique_unresolved)}"
+                print(f"  ❌ {error_msg}")
+                raise ValueError(error_msg)
             
             return resolved_config
+        except ValueError:
+            # Re-raise ValueError (our unresolved variable error)
+            raise
         except Exception as e:
-            # If resolution fails, return original config
+            # If resolution fails for other reasons, return original config
             print(f"  ⚠️  Error resolving variables: {e}")
             return config
     

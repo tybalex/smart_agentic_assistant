@@ -65,6 +65,16 @@ The UI will open in your browser at `http://localhost:8501`
   - ❌ Failed: Red indicator with error message
   - ⏱️ Timing: Execution time for each node
 
+### Stage 4: AI Chat Assistant ✅ (NEW!)
+
+- **Right-Side Chat Panel**: Integrated AI assistant for workflow modification
+- **Natural Language Editing**: "Add error handling to create_account node"
+- **Live Updates**: Changes from agent appear immediately in workflow view
+- **Context Aware**: Agent understands the current workflow
+- **Tool Use**: Agent autonomously uses tools to modify workflow
+- **Chat History**: Full conversation tracked in session
+- **Examples & Help**: Built-in suggestions for what the agent can do
+
 ## 📁 File Structure
 
 ```
@@ -131,6 +141,28 @@ ui/
 - Check dependencies: Nodes that depend on others will use their outputs
 - Mock data: If dependencies aren't run, nodes may use default/mock values
 - Iterate: Run, check output, edit config, run again!
+
+### Using the AI Chat Assistant (Stage 4)
+
+1. **Enable Chat Panel**: Check "Show Chat Panel" in sidebar
+2. **Chat Appears on Right**: AI assistant ready to help
+3. **Ask Natural Questions**: 
+   - "Add retry logic to the create_account node"
+   - "Create a new node that sends a Slack notification"
+   - "Change all email subjects to be more professional"
+4. **Agent Modifies Workflow**: Changes appear in main view automatically
+5. **Export When Done**: Save agent's changes with Export to YAML
+
+**Requirements:**
+- Set `ANTHROPIC_API_KEY` environment variable
+- Agent uses Claude Sonnet 4.5
+
+**Example Prompts:**
+- "Add error handling to all API calls"
+- "Create a validation node before create_account"
+- "Add a log node at the end that summarizes everything"
+- "Change the timeout on create_account to 60 seconds"
+- "Remove the validate_email node"
 
 ### Display Options
 

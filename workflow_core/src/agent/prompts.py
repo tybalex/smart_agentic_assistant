@@ -63,6 +63,20 @@ Use {{variable}} syntax to reference:
 - Global variables: {{user.email}}
 - Node results: {{validate_email.status}}
 
+**Filters** (Jinja2-style):
+- `| length` - Get array/list length: {{items | length}}
+- `| first` / `| last` - Get first/last item
+- `| upper` / `| lower` - Change case
+- `| trim` - Remove whitespace
+- `| replace('old', 'new')` - Replace text: {{email | replace('@', '-')}}
+- Can chain: {{user.name | trim | upper}}
+
+Common usage in conditions:
+```yaml
+condition: '{{node.records | length}} == 0'  # Check if empty
+condition: '{{user.status | lower}} == "active"'  # Case-insensitive
+```
+
 ## Available Tools
 
 You have these tools at your disposal:

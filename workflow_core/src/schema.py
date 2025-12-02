@@ -151,4 +151,5 @@ class WorkflowExecutionResult(BaseModel):
     end_time: str
     total_duration: float  # seconds
     error: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list, description="Warnings generated during execution")
 

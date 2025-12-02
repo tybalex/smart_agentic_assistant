@@ -35,9 +35,30 @@ def render_workflow_info(workflow: WorkflowDefinition):
     
     # Variables section
     if workflow.variables:
-        with st.expander("🏷️ Global Variables", expanded=False):
+        with st.expander("🔤 Global Variables (Editable in Sidebar)", expanded=True):
+            st.caption("💡 You can edit these values in the sidebar under '🔤 Workflow Variables'")
+            
+            # Display in a nice table format
+            cols = st.columns([2, 3])
+            with cols[0]:
+                st.markdown("**Variable**")
+            with cols[1]:
+                st.markdown("**Value**")
+            
+            st.divider()
+            
             for key, value in workflow.variables.items():
-                st.code(f"{key}: {value}", language="yaml")
+                cols = st.columns([2, 3])
+                with cols[0]:
+                    st.markdown(f"`{key}`")
+                with cols[1]:
+                    # Show value with appropriate formatting
+                    if isinstance(value, bool):
+                        st.markdown(f"✅ `{value}`" if value else f"❌ `{value}`")
+                    elif isinstance(value, (int, float)):
+                        st.markdown(f"🔢 `{value}`")
+                    else:
+                        st.markdown(f"📝 `{value}`")
     
     # Additional metadata
     if workflow.metadata.author or workflow.metadata.tags:

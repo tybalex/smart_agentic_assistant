@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from ui.utils.loader import find_workflow_files, load_workflow_file, get_workflow_summary
 from ui.components.workflow_info import render_workflow_info
 from ui.components.node_card import render_node_card
+from ui.components.chat_panel import render_chat_panel
 from src.schema import WorkflowNode, WorkflowDefinition, ExecutionContext, NodeResult
 from src.runtime import SimpleWorkflowExecutor
 import asyncio
@@ -251,6 +252,90 @@ def clear_execution_results():
     st.success("🗑️ Cleared all execution results")
 
 
+def run_all_nodes(workflow: WorkflowDefinition):
+    """Run the entire workflow using the proper executor (just like run_workflow.py)"""
+    try:
+        # Clear previous results
+        st.session_state.execution_results = {}
+        st.session_state.execution_context = None
+        
+        # Create progress placeholder
+        progress_container = st.empty()
+        
+        with progress_container.container():
+            st.info("🚀 Running workflow...")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+        
+        # Execute the entire workflow using the proper executor
+        executor = SimpleWorkflowExecutor()
+        
+        # Run async execution
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # This is the proper way - uses all the built-in logic for conditions, dependencies, etc.
+            result = loop.run_until_complete(
+                executor.execute(workflow)
+            )
+            
+            # Extract node results from the workflow execution result
+            for node_id, node_result in result.node_results.items():
+                st.session_state.execution_results[node_id] = node_result
+            
+            # Create an execution context for display purposes (matching what's in the result)
+            st.session_state.execution_context = ExecutionContext(
+                workflow_id=result.workflow_id,
+                execution_id=result.execution_id,
+                variables=workflow.variables.copy(),
+                node_results={
+                    node_id: node_result.output 
+                    for node_id, node_result in result.node_results.items() 
+                    if node_result.status == "success"
+                }
+            )
+            
+            progress_bar.progress(1.0)
+            
+            # Show summary based on actual execution
+            total_nodes = len(result.node_results)
+            successful = sum(1 for r in result.node_results.values() if r.status == "success")
+            failed = sum(1 for r in result.node_results.values() if r.status == "failed")
+            skipped = sum(1 for r in result.node_results.values() if r.status == "skipped")
+            
+            status_text.empty()
+            
+            if result.status == "success":
+                st.success(f"✅ Workflow completed successfully!")
+            elif result.status == "failed":
+                st.error(f"❌ Workflow failed!")
+            else:
+                st.warning(f"⚠️ Workflow completed with issues")
+            
+            # Show detailed stats
+            st.markdown(f"""
+            **Execution Summary:**
+            - ✅ Successful: {successful}
+            - ❌ Failed: {failed}
+            - ⏭️ Skipped: {skipped}
+            - 📊 Total: {total_nodes}
+            - ⏱️ Duration: {result.total_duration:.2f}s
+            """)
+            
+        finally:
+            loop.close()
+        
+        # Rerun to show results in cards
+        time.sleep(1)  # Brief pause to see the message
+        st.rerun()
+        
+    except ValueError as e:
+        st.error(f"❌ Cannot run workflow: {e}")
+    except Exception as e:
+        st.error(f"❌ Error running workflow: {str(e)}")
+
+
 def main():
     """Main application entry point"""
     
@@ -360,9 +445,11 @@ def main():
                     st.rerun()
             
             with col2:
-                # Run all button (coming soon)
-                st.button("▶️ Run All", use_container_width=True, disabled=True,
-                         help="Coming soon: Run all nodes in order")
+                # Run all button
+                if st.button("▶️ Run All", use_container_width=True,
+                           help="Run all nodes in topological order"):
+                    if st.session_state.modified_workflow:
+                        run_all_nodes(st.session_state.modified_workflow)
             
             # Show execution stats
             if st.session_state.execution_results:
@@ -379,12 +466,84 @@ def main():
         
         st.divider()
         
+        # Workflow Variables Editor
+        st.markdown("### 🔤 Workflow Variables")
+        
+        with st.expander("Edit Variables", expanded=False):
+            st.caption("Change variable values to test different scenarios")
+            
+            if st.session_state.modified_workflow and st.session_state.modified_workflow.variables:
+                # Track if any variable changed
+                variables_changed = False
+                new_variables = {}
+                
+                for var_name, var_value in st.session_state.modified_workflow.variables.items():
+                    # Determine input type based on current value
+                    if isinstance(var_value, bool):
+                        new_value = st.checkbox(
+                            var_name,
+                            value=var_value,
+                            key=f"var_{var_name}"
+                        )
+                    elif isinstance(var_value, (int, float)):
+                        new_value = st.number_input(
+                            var_name,
+                            value=var_value,
+                            key=f"var_{var_name}"
+                        )
+                    else:
+                        # String or other types
+                        new_value = st.text_input(
+                            var_name,
+                            value=str(var_value),
+                            key=f"var_{var_name}"
+                        )
+                    
+                    new_variables[var_name] = new_value
+                    
+                    if new_value != var_value:
+                        variables_changed = True
+                
+                # Apply button
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✅ Apply Changes", use_container_width=True, disabled=not variables_changed):
+                        st.session_state.modified_workflow.variables = new_variables
+                        st.session_state.workflow_modified = True
+                        # Clear execution results since variables changed
+                        st.session_state.execution_results = {}
+                        st.session_state.execution_context = None
+                        st.success("Variables updated!")
+                        st.rerun()
+                
+                with col2:
+                    if st.button("🔄 Reset", use_container_width=True):
+                        # Reload from original file
+                        original = load_workflow_file(selected_file)
+                        if original:
+                            st.session_state.modified_workflow.variables = copy.deepcopy(original.variables)
+                            st.success("Variables reset!")
+                            st.rerun()
+            elif st.session_state.modified_workflow:
+                st.info("No variables defined in this workflow")
+            else:
+                st.info("Load a workflow to edit variables")
+        
+        st.divider()
+        
         # Options
         st.markdown("### ⚙️ Display Options")
         show_execution_order = st.checkbox("Show Execution Order", value=True)
         show_node_index = st.checkbox("Show Node Numbers", value=True)
         enable_edit_mode = st.checkbox("Enable Edit Mode", value=False, 
                                        help="Show Edit buttons on node cards")
+        
+        st.divider()
+        
+        # Chat panel toggle
+        st.markdown("### 💬 AI Assistant")
+        show_chat_panel = st.checkbox("Show Chat Panel", value=True,
+                                      help="Show AI agent chat on the right side")
     
     # Main content area
     if selected_file:
@@ -399,97 +558,221 @@ def main():
         else:
             workflow = st.session_state.modified_workflow
         
-        # Show unsaved changes banner if applicable
-        if st.session_state.workflow_modified:
-            st.warning("⚠️ **You have unsaved changes!** Go to sidebar → '💾 Save to File' section → Click 'Export to YAML File' to save.")
-        
-        # Display workflow information
-        render_workflow_info(workflow)
-        
-        # Show execution order if requested
-        if show_execution_order:
-            try:
-                sorted_nodes = workflow.topological_sort()
-                execution_order = [node.id for node in sorted_nodes]
-                
-                st.markdown("### 🔀 Execution Order")
-                order_str = " → ".join([f"`{node_id}`" for node_id in execution_order])
-                st.markdown(order_str)
-                st.divider()
-            except ValueError as e:
-                st.error(f"⚠️ Workflow validation error: {e}")
-                st.warning("Showing nodes in definition order instead.")
-                sorted_nodes = workflow.nodes
+        # Split into two columns: workflow on left, chat on right
+        if show_chat_panel:
+            workflow_col, chat_col = st.columns([2, 1])
         else:
-            sorted_nodes = workflow.nodes
+            workflow_col = st.container()
+            chat_col = None
         
-        # Display nodes section
-        st.markdown("### 📦 Workflow Nodes")
-        
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown(f"*Displaying {len(sorted_nodes)} nodes*")
-        with col2:
-            if enable_edit_mode and st.button("📝 Edit All", use_container_width=True):
-                # Toggle edit mode for all nodes
-                if len(st.session_state.edit_mode_nodes) == len(sorted_nodes):
-                    st.session_state.edit_mode_nodes.clear()
-                else:
-                    st.session_state.edit_mode_nodes = {node.id for node in sorted_nodes}
-                st.rerun()
-        
-        # Get all node IDs for dependency selection
-        all_node_ids = [node.id for node in workflow.nodes]
-        
-        # Render each node as a card
-        total_nodes = len(sorted_nodes)
-        for idx, node in enumerate(sorted_nodes, start=1):
-            # Create a container for each node with edit button
-            if enable_edit_mode:
-                # Show edit button in header
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    pass  # Node card will render here
-                with col2:
-                    # Check if this node is in edit mode
-                    is_editing = node.id in st.session_state.edit_mode_nodes
+        # Workflow view
+        with workflow_col:
+            # Show unsaved changes banner if applicable
+            if st.session_state.workflow_modified:
+                st.warning("⚠️ **You have unsaved changes!** Go to sidebar → '💾 Save to File' section → Click 'Export to YAML File' to save.")
+                
+                # Show what changed
+                with st.expander("🔍 View Changes", expanded=False):
+                    # Load original workflow for comparison
+                    original_workflow = load_workflow_file(selected_file)
+                    modified_workflow = st.session_state.modified_workflow
                     
-                    if not is_editing:
-                        if st.button(f"✏️ Edit", key=f"edit_btn_{node.id}", use_container_width=True):
-                            st.session_state.edit_mode_nodes.add(node.id)
-                            st.rerun()
+                    if original_workflow:
+                        changes_found = False
+                        
+                        # Compare metadata
+                        if original_workflow.metadata.name != modified_workflow.metadata.name:
+                            st.markdown("**📝 Name changed:**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown(f"*Before:* `{original_workflow.metadata.name}`")
+                            with col2:
+                                st.markdown(f"*After:* `{modified_workflow.metadata.name}`")
+                            changes_found = True
+                        
+                        if original_workflow.metadata.description != modified_workflow.metadata.description:
+                            st.markdown("**📝 Description changed:**")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.caption(f"*Before:* {original_workflow.metadata.description[:100]}...")
+                            with col2:
+                                st.caption(f"*After:* {modified_workflow.metadata.description[:100]}...")
+                            changes_found = True
+                        
+                        # Compare variables
+                        if original_workflow.variables != modified_workflow.variables:
+                            st.markdown("**🔤 Variables changed:**")
+                            orig_vars = set(original_workflow.variables.keys())
+                            mod_vars = set(modified_workflow.variables.keys())
+                            
+                            added_vars = mod_vars - orig_vars
+                            removed_vars = orig_vars - mod_vars
+                            changed_vars = {k for k in orig_vars & mod_vars 
+                                          if original_workflow.variables[k] != modified_workflow.variables[k]}
+                            
+                            if added_vars:
+                                st.success(f"➕ Added: {', '.join(added_vars)}")
+                            if removed_vars:
+                                st.error(f"➖ Removed: {', '.join(removed_vars)}")
+                            if changed_vars:
+                                st.info(f"✏️ Modified: {', '.join(changed_vars)}")
+                            changes_found = True
+                        
+                        # Compare nodes
+                        orig_node_ids = {node.id for node in original_workflow.nodes}
+                        mod_node_ids = {node.id for node in modified_workflow.nodes}
+                        
+                        added_nodes = mod_node_ids - orig_node_ids
+                        removed_nodes = orig_node_ids - mod_node_ids
+                        common_nodes = orig_node_ids & mod_node_ids
+                        
+                        if added_nodes:
+                            st.markdown("**➕ Added Nodes:**")
+                            for node_id in added_nodes:
+                                node = next(n for n in modified_workflow.nodes if n.id == node_id)
+                                st.success(f"• `{node_id}` ({node.type}): {node.description or 'No description'}")
+                            changes_found = True
+                        
+                        if removed_nodes:
+                            st.markdown("**➖ Removed Nodes:**")
+                            for node_id in removed_nodes:
+                                node = next(n for n in original_workflow.nodes if n.id == node_id)
+                                st.error(f"• `{node_id}` ({node.type}): {node.description or 'No description'}")
+                            changes_found = True
+                        
+                        # Check modified nodes
+                        modified_nodes = []
+                        for node_id in common_nodes:
+                            orig_node = next(n for n in original_workflow.nodes if n.id == node_id)
+                            mod_node = next(n for n in modified_workflow.nodes if n.id == node_id)
+                            
+                            # Simple comparison (could be more detailed)
+                            if (orig_node.type != mod_node.type or
+                                orig_node.description != mod_node.description or
+                                orig_node.config != mod_node.config or
+                                orig_node.depends_on != mod_node.depends_on or
+                                orig_node.condition != mod_node.condition):
+                                modified_nodes.append(node_id)
+                        
+                        if modified_nodes:
+                            st.markdown("**✏️ Modified Nodes:**")
+                            for node_id in modified_nodes:
+                                orig_node = next(n for n in original_workflow.nodes if n.id == node_id)
+                                mod_node = next(n for n in modified_workflow.nodes if n.id == node_id)
+                                
+                                with st.container():
+                                    st.info(f"• `{node_id}` ({mod_node.type})")
+                                    
+                                    # Show specific changes
+                                    if orig_node.description != mod_node.description:
+                                        st.caption(f"  - Description: '{orig_node.description}' → '{mod_node.description}'")
+                                    if orig_node.type != mod_node.type:
+                                        st.caption(f"  - Type: {orig_node.type} → {mod_node.type}")
+                                    if orig_node.config != mod_node.config:
+                                        st.caption(f"  - Config modified")
+                                    if orig_node.depends_on != mod_node.depends_on:
+                                        st.caption(f"  - Dependencies: {orig_node.depends_on} → {mod_node.depends_on}")
+                                    if orig_node.condition != mod_node.condition:
+                                        st.caption(f"  - Condition: '{orig_node.condition}' → '{mod_node.condition}'")
+                            changes_found = True
+                        
+                        if not changes_found:
+                            st.info("No changes detected (this shouldn't happen!)")
+                    else:
+                        st.error("Could not load original workflow for comparison")
             
-            # Determine mode
-            mode = "edit" if node.id in st.session_state.edit_mode_nodes else "view"
+            # Display workflow information
+            render_workflow_info(workflow)
             
-            # Get execution result if available
-            execution_result = st.session_state.execution_results.get(node.id)
+            # Show execution order if requested
+            if show_execution_order:
+                try:
+                    sorted_nodes = workflow.topological_sort()
+                    execution_order = [node.id for node in sorted_nodes]
+                    
+                    st.markdown("### 🔀 Execution Order")
+                    order_str = " → ".join([f"`{node_id}`" for node_id in execution_order])
+                    st.markdown(order_str)
+                    st.divider()
+                except ValueError as e:
+                    st.error(f"⚠️ Workflow validation error: {e}")
+                    st.warning("Showing nodes in definition order instead.")
+                    sorted_nodes = workflow.nodes
+            else:
+                sorted_nodes = workflow.nodes
             
-            # Render the node card
-            render_node_card(
-                node=node,
-                index=idx if show_node_index else 0,
-                total=total_nodes if show_node_index else 0,
-                mode=mode,
-                execution_result=execution_result,
-                all_node_ids=all_node_ids,
-                on_save=save_node_changes,
-                on_delete=delete_node,
-                on_run=run_single_node,
-                enable_run=enable_run_mode
+            # Display nodes section
+            st.markdown("### 📦 Workflow Nodes")
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"*Displaying {len(sorted_nodes)} nodes*")
+            with col2:
+                if enable_edit_mode and st.button("📝 Edit All", use_container_width=True):
+                    # Toggle edit mode for all nodes
+                    if len(st.session_state.edit_mode_nodes) == len(sorted_nodes):
+                        st.session_state.edit_mode_nodes.clear()
+                    else:
+                        st.session_state.edit_mode_nodes = {node.id for node in sorted_nodes}
+                    st.rerun()
+            
+            # Get all node IDs for dependency selection
+            all_node_ids = [node.id for node in workflow.nodes]
+            
+            # Render each node as a card
+            total_nodes = len(sorted_nodes)
+            for idx, node in enumerate(sorted_nodes, start=1):
+                # Create a container for each node with edit button
+                if enable_edit_mode:
+                    # Show edit button in header
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        pass  # Node card will render here
+                    with col2:
+                        # Check if this node is in edit mode
+                        is_editing = node.id in st.session_state.edit_mode_nodes
+                        
+                        if not is_editing:
+                            if st.button(f"✏️ Edit", key=f"edit_btn_{node.id}", use_container_width=True):
+                                st.session_state.edit_mode_nodes.add(node.id)
+                                st.rerun()
+                
+                # Determine mode
+                mode = "edit" if node.id in st.session_state.edit_mode_nodes else "view"
+                
+                # Get execution result if available
+                execution_result = st.session_state.execution_results.get(node.id)
+                
+                # Render the node card
+                render_node_card(
+                    node=node,
+                    index=idx if show_node_index else 0,
+                    total=total_nodes if show_node_index else 0,
+                    mode=mode,
+                    execution_result=execution_result,
+                    all_node_ids=all_node_ids,
+                    on_save=save_node_changes,
+                    on_delete=delete_node,
+                    on_run=run_single_node,
+                    enable_run=enable_run_mode
+                )
+            
+            # Footer
+            st.divider()
+            st.markdown("---")
+            st.markdown(
+                """
+                <div style='text-align: center; color: gray;'>
+                🤖 Smart Workflow Visualizer v0.4.0 | With AI Chat
+                </div>
+                """,
+                unsafe_allow_html=True
             )
         
-        # Footer
-        st.divider()
-        st.markdown("---")
-        st.markdown(
-            """
-            <div style='text-align: center; color: gray;'>
-            🤖 Smart Workflow Visualizer v0.3.0 | Stage 3: Run Nodes
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        # Render chat panel in the right column
+        if show_chat_panel and chat_col:
+            with chat_col:
+                render_chat_panel(workspace_dir)
 
 
 if __name__ == "__main__":

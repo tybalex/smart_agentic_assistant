@@ -44,6 +44,7 @@ class WorkflowAgent:
         self.model = model
         self.tools = WorkflowTools(workspace_dir)
         self.conversation_history: List[Dict[str, Any]] = []
+        self.last_tool_calls: List[str] = []  # Track tool calls from last chat
     
     def chat(self, user_message: str, max_turns: int = 50) -> str:
         """
@@ -58,6 +59,9 @@ class WorkflowAgent:
         Returns:
             The agent's final response
         """
+        # Clear previous tool calls
+        self.last_tool_calls = []
+        
         # Add user message to history
         self.conversation_history.append({
             "role": "user",
@@ -97,6 +101,9 @@ class WorkflowAgent:
                         tool_use_id = content_block.id
                         
                         print(f"🔧 Agent using tool: {tool_name}")
+                        
+                        # Track tool call
+                        self.last_tool_calls.append(tool_name)
                         
                         # Execute the tool
                         result = self._execute_tool(tool_name, tool_input)
@@ -164,7 +171,12 @@ class WorkflowAgent:
     def reset_conversation(self):
         """Reset conversation history (start fresh)"""
         self.conversation_history = []
+        self.last_tool_calls = []
         print("🔄 Conversation reset")
+    
+    def get_last_tool_calls(self) -> List[str]:
+        """Get the list of tool calls from the last chat interaction"""
+        return self.last_tool_calls.copy()
     
     def get_current_workflow(self):
         """Get the current workflow the agent is working with"""

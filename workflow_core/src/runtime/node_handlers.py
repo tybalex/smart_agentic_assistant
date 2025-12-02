@@ -210,7 +210,14 @@ class TransformHandler(NodeHandler):
             else:
                 # Custom expression - try to evaluate
                 expression = config.get("expression")
-                return eval(expression, {"input": input_data, "context": context})
+                result = eval(expression, {"input": input_data, "context": context})
+                
+                # Check if output_key is specified - if so, wrap result in a dict
+                output_key = config.get("output_key")
+                if output_key:
+                    return {output_key: result}
+                else:
+                    return result
                 
         except Exception as e:
             # If evaluation fails, raise the error - don't use mock data

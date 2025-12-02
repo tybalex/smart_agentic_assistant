@@ -235,6 +235,12 @@ async def run_workflow(workflow_file: str, variables: dict = None):
     if result.error:
         print(f"❌ Error: {result.error}")
     
+    # Show warnings if any
+    if result.warnings:
+        print(f"\n⚠️  Warnings ({len(result.warnings)}):")
+        for warning in result.warnings:
+            print(f"   - {warning}")
+    
     # Node results
     print_section("📝 Node Execution Details", "-")
     total = len(result.node_results)

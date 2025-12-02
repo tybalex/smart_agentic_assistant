@@ -80,9 +80,12 @@ python run_ui.py
 - ✏️ Edit nodes inline with JSON validation
 - ➕ Add and remove nodes dynamically
 - 💾 Export modified workflows to YAML
-- ▶️ **NEW:** Run individual nodes (Jupyter-style!)
-- ✅ **NEW:** See real-time execution results
-- 🔗 **NEW:** Chain node executions with context
+- ▶️ Run individual nodes (Jupyter-style!)
+- ✅ See real-time execution results
+- 🔗 Chain node executions with context
+- 💬 **NEW:** AI chat assistant integrated in UI!
+- 🤖 **NEW:** Modify workflows with natural language
+- ✨ **NEW:** Agent-driven workflow editing
 
 See [ui/README.md](ui/README.md) for detailed documentation.
 
