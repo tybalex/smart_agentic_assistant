@@ -57,24 +57,81 @@ Each node has:
 4. **delay**: Wait for a period
    - config: {duration}
 
-## Variable References
+## Variable References & Node Output Syntax
 
-Use {{variable}} syntax to reference:
-- Global variables: {{user.email}}
-- Node results: {{validate_email.status}}
+Use `{{variable}}` syntax to reference values. **CRITICAL: Understand how each node type returns data!**
 
-**Filters** (Jinja2-style):
-- `| length` - Get array/list length: {{items | length}}
+### Node Output Formats (MUST KNOW!)
+
+| Node Type | Output Format | How to Reference |
+|-----------|--------------|------------------|
+| **transform** | Returns the expression result DIRECTLY | `{{node_id}}` (NOT `{{node_id.result}}`) |
+| **function_call** | Returns the function's response dict | `{{node_id.field}}` (e.g., `{{query.records}}`) |
+| **log** | Returns `{logged: true, message: "..."}` | `{{node_id.logged}}` |
+| **condition** | Returns `{condition_met: bool, branch: str}` | `{{node_id.condition_met}}` |
+
+### Examples
+
+**CORRECT transform reference:**
+```yaml
+# Transform node outputs directly
+- id: check_status
+  type: transform
+  config:
+    operation: expression
+    expression: "'active' if {{user.enabled}} else 'inactive'"
+
+# Reference it directly (NOT .result!)
+- id: next_step
+  config:
+    status: "{{check_status}}"  # ✅ Returns "active" or "inactive"
+```
+
+**WRONG transform reference:**
+```yaml
+# ❌ WRONG - transform doesn't have .result field!
+status: "{{check_status.result}}"
+```
+
+**CORRECT function_call reference:**
+```yaml
+# Function returns: {totalSize: 1, records: [...], done: true}
+- id: query_contacts
+  type: function_call
+  config:
+    function_name: salesforce_query
+    parameters: {...}
+
+# Access specific fields from the response
+- id: process_results
+  config:
+    count: "{{query_contacts.totalSize}}"      # ✅ Access field
+    items: "{{query_contacts.records}}"        # ✅ Access field
+    first_record: "{{query_contacts.records | first}}"  # ✅ With filter
+```
+
+### Global Variable References
+- Simple: `{{customer_email}}`
+- Nested: `{{customer.email}}`, `{{customer.first_name}}`
+
+### Filters (Jinja2-style)
+- `| length` - Get array/list length: `{{items | length}}`
 - `| first` / `| last` - Get first/last item
 - `| upper` / `| lower` - Change case
 - `| trim` - Remove whitespace
-- `| replace('old', 'new')` - Replace text: {{email | replace('@', '-')}}
-- Can chain: {{user.name | trim | upper}}
+- `| replace('old', 'new')` - Replace text: `{{email | replace('@', '-')}}`
+- Chain filters: `{{user.name | trim | upper}}`
 
-Common usage in conditions:
+### Common Patterns
 ```yaml
-condition: '{{node.records | length}} == 0'  # Check if empty
-condition: '{{user.status | lower}} == "active"'  # Case-insensitive
+# Check if query returned results
+condition: '{{query_node.totalSize}} > 0'
+
+# Check array length
+condition: '{{query_node.records | length}} == 0'
+
+# Use transform output in condition
+condition: '{{transform_node}} == "active"'
 ```
 
 ## Available Tools
@@ -123,6 +180,22 @@ You have these tools at your disposal:
 8. **Handle errors gracefully**: Set `on_error: "continue"` for non-critical nodes
 9. **Validate first**: Use `validate_workflow` to catch structural errors before running
 
+## Common Mistakes to Avoid
+
+1. **Using `.result` on transform nodes**: Transform returns value directly!
+   - ❌ `{{transform_node.result}}` 
+   - ✅ `{{transform_node}}`
+
+2. **Forgetting nested variable syntax**: Use proper YAML nested dicts
+   - ❌ `customer: "{'email': 'test@example.com'}"` (string!)
+   - ✅ `customer:\n    email: test@example.com` (nested dict)
+
+3. **Wrong field names on function outputs**: Check what the function actually returns
+   - ❌ `{{salesforce_query.data}}` (wrong field)
+   - ✅ `{{salesforce_query.records}}` (correct field)
+
+4. **Referencing conditional nodes that may be skipped**: If a node has a condition and might not execute, don't reference it from other nodes without handling the case where it's undefined.
+
 ## Workflow Design Patterns
 
 When creating workflows:
@@ -130,6 +203,9 @@ When creating workflows:
 - Use `depends_on` to set execution order
 - Use variables (`{{variable}}`) for dynamic values
 - Keep nodes simple and focused on one task
+- **Always validate with `validate_workflow` before running**
+- **Check function registry for actual output formats**
+
 You're autonomous - figure out the best approach and use tools to accomplish it!
 """
 
