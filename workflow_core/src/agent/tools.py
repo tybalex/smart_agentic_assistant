@@ -281,14 +281,28 @@ class WorkflowTools:
             }
         
         try:
-            # Run async execution
-            loop = asyncio.get_event_loop()
-            result = loop.run_until_complete(
-                self.executor.execute(self.current_workflow, variables)
-            )
+            # Run async execution - use new event loop to avoid conflicts
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                result = loop.run_until_complete(
+                    self.executor.execute(self.current_workflow, variables)
+                )
+            finally:
+                loop.close()
             
             # Store result
             self.last_execution_result = result
+            
+            # Check for validation or execution errors
+            if result.error:
+                return {
+                    "status": "error",
+                    "message": result.error,
+                    "workflow_status": result.status,
+                    "warnings": result.warnings if result.warnings else []
+                }
             
             # Format results for agent
             node_results = {}
@@ -300,10 +314,12 @@ class WorkflowTools:
                     "output": str(node_result.output)[:500] if node_result.output else None  # Truncate long outputs
                 }
             
+            # Return detailed result including warnings
             return {
                 "status": "success",
                 "workflow_status": result.status,
                 "duration": result.total_duration,
+                "warnings": result.warnings if result.warnings else [],
                 "node_results": node_results
             }
         except Exception as e:
@@ -326,11 +342,16 @@ class WorkflowTools:
             }
         
         try:
-            # Run validation
-            loop = asyncio.get_event_loop()
-            validation = loop.run_until_complete(
-                self.executor.validate(self.current_workflow)
-            )
+            # Run validation - use new event loop to avoid conflicts
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                validation = loop.run_until_complete(
+                    self.executor.validate(self.current_workflow)
+                )
+            finally:
+                loop.close()
             
             return {
                 "status": "success",

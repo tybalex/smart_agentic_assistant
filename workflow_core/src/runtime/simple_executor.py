@@ -374,6 +374,9 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                         value = value.get(part)
                     else:
                         value = getattr(value, part, None)
+                # Check if final value is None (couldn't fully resolve path)
+                if value is None and len(parts) > 1:
+                    unresolved_vars.append(var_path)
                 return value
             
             # Check variables
@@ -387,6 +390,9 @@ class SimpleWorkflowExecutor(WorkflowRuntime):
                         value = value.get(part)
                     else:
                         value = getattr(value, part, None)
+                # Check if final value is None (couldn't fully resolve path)
+                if value is None and len(parts) > 1:
+                    unresolved_vars.append(var_path)
                 return value
             
             # Variable not found
