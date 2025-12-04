@@ -1,27 +1,29 @@
 """
-Streamlit UI for the Task Agent.
-Provides text input, task visualization, and execution controls.
+Streamlit UI for the Continuous Planning Agent.
+Provides goal input, plan visualization, state tracking, and execution controls.
 """
 
 import streamlit as st
 import json
 from typing import Optional, Dict, Any, List
 
-from models import TaskStatus, Task
-from agent import TaskAgent, create_agent
-from task_manager import TaskManager
+from models import (
+    Session, StepStatus, PlanStep, Action, SessionStatus, Plan
+)
+from agent import ContinuousPlanningAgent, create_agent
+from session_manager import SessionManager
 from tool_client import ToolRegistryClient
 
 
 # Page configuration
 st.set_page_config(
-    page_title="Task Agent",
+    page_title="Continuous Planning Agent",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for text highlighting and styling
+# Custom CSS
 st.markdown("""
 <style>
     /* Main container styling */
@@ -41,19 +43,33 @@ st.markdown("""
         margin-bottom: 2rem;
     }
     
-    /* Text highlighting styles */
-    .highlighted-text {
+    /* Goal box */
+    .goal-box {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+        border-left: 4px solid #667eea;
+    }
+    
+    .goal-label {
+        color: #a5b4fc;
+        font-size: 0.875rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+    }
+    
+    .goal-text {
         font-family: 'Monaco', 'Menlo', monospace;
         font-size: 1rem;
         line-height: 1.8;
-        padding: 1.5rem;
-        background: #1a1a2e;
-        border-radius: 12px;
         color: #e2e8f0;
         white-space: pre-wrap;
-        word-wrap: break-word;
     }
     
+    /* Text highlighting */
     .span-completed {
         background: linear-gradient(135deg, #10b981 0%, #059669 100%);
         color: white;
@@ -99,109 +115,160 @@ st.markdown("""
         50% { opacity: 0.7; }
     }
     
-    /* Task card styling */
-    .task-card {
-        background: #ffffff;
+    /* State card */
+    .state-card {
+        background: #f8fafc;
         border-radius: 12px;
         padding: 1rem;
-        margin-bottom: 0.75rem;
-        border-left: 4px solid #6366f1;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+        border: 1px solid #e2e8f0;
+    }
+    
+    .state-label {
+        color: #64748b;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.25rem;
+    }
+    
+    .state-content {
+        color: #1e293b;
+        font-size: 0.9rem;
+    }
+    
+    /* Plan step styling */
+    .plan-step {
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
+        border-left: 4px solid #e2e8f0;
         transition: transform 0.2s, box-shadow 0.2s;
     }
     
-    .task-card:hover {
+    .plan-step:hover {
         transform: translateX(4px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
     
-    .task-card.completed {
+    .plan-step.completed {
         border-left-color: #10b981;
         background: #f0fdf4;
     }
     
-    .task-card.current {
+    .plan-step.in-progress {
         border-left-color: #f59e0b;
         background: #fffbeb;
     }
     
-    .task-card.failed {
+    .plan-step.failed {
         border-left-color: #ef4444;
         background: #fef2f2;
     }
     
-    .task-card.skipped {
+    .plan-step.skipped {
         border-left-color: #6b7280;
         background: #f9fafb;
         opacity: 0.7;
     }
     
-    .task-title {
-        font-weight: 600;
-        font-size: 1rem;
+    .step-description {
+        font-weight: 500;
         color: #1f2937;
-        margin-bottom: 0.25rem;
     }
     
-    .task-description {
-        font-size: 0.875rem;
+    .step-result {
+        font-size: 0.8rem;
         color: #6b7280;
+        margin-top: 0.25rem;
     }
     
-    /* Progress bar */
-    .progress-container {
-        background: #e5e7eb;
-        border-radius: 9999px;
-        height: 8px;
-        overflow: hidden;
-        margin: 1rem 0;
-    }
-    
-    .progress-bar {
-        height: 100%;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        border-radius: 9999px;
-        transition: width 0.5s ease;
-    }
-    
-    /* Status badges */
-    .status-badge {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    
-    .status-pending { background: #dbeafe; color: #1d4ed8; }
-    .status-in-progress { background: #fef3c7; color: #b45309; }
-    .status-completed { background: #d1fae5; color: #065f46; }
-    .status-failed { background: #fee2e2; color: #991b1b; }
-    .status-skipped { background: #f3f4f6; color: #4b5563; }
-    
-    /* Execution plan card */
-    .plan-card {
-        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-        border: 1px solid #e2e8f0;
+    /* Action card */
+    .action-card {
+        background: linear-gradient(135deg, #fefce8 0%, #fef9c3 100%);
+        border: 2px solid #eab308;
         border-radius: 12px;
         padding: 1.5rem;
         margin: 1rem 0;
     }
     
+    .action-label {
+        color: #854d0e;
+        font-size: 0.875rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.75rem;
+    }
+    
+    .action-tool {
+        font-family: 'Monaco', 'Menlo', monospace;
+        background: #ffffff;
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        margin-bottom: 0.75rem;
+        color: #1f2937;
+    }
+    
+    .action-reasoning {
+        color: #713f12;
+        font-size: 0.9rem;
+        font-style: italic;
+    }
+    
+    /* Budget indicator */
+    .budget-container {
+        background: #f1f5f9;
+        border-radius: 8px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .budget-bar {
+        height: 8px;
+        background: #e2e8f0;
+        border-radius: 4px;
+        overflow: hidden;
+        margin: 0.5rem 0;
+    }
+    
+    .budget-fill {
+        height: 100%;
+        border-radius: 4px;
+        transition: width 0.3s ease;
+    }
+    
+    .budget-fill.safe {
+        background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+    }
+    
+    .budget-fill.warning {
+        background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
+    }
+    
+    .budget-fill.danger {
+        background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+    }
+    
+    .budget-text {
+        font-size: 0.8rem;
+        color: #64748b;
+    }
+    
     /* Agent notes */
     .agent-note {
-        background: #fefce8;
-        border-left: 4px solid #eab308;
+        background: #eff6ff;
+        border-left: 4px solid #3b82f6;
         padding: 0.75rem 1rem;
         margin: 0.5rem 0;
         border-radius: 0 8px 8px 0;
         font-size: 0.875rem;
-        color: #713f12;
+        color: #1e40af;
     }
     
-    /* Tool health indicator */
+    /* Health indicator */
     .health-indicator {
         display: inline-flex;
         align-items: center;
@@ -221,6 +288,111 @@ st.markdown("""
         background: #fee2e2;
         color: #991b1b;
     }
+    
+    /* History entry */
+    .history-entry {
+        background: #f8fafc;
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin-bottom: 0.5rem;
+        border: 1px solid #e2e8f0;
+    }
+    
+    .history-turn {
+        font-weight: 600;
+        color: #6366f1;
+        font-size: 0.8rem;
+    }
+    
+    .history-action {
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 0.85rem;
+        color: #1f2937;
+    }
+    
+    .history-result {
+        font-size: 0.8rem;
+        color: #6b7280;
+        margin-top: 0.25rem;
+    }
+    
+    /* Plan header */
+    .plan-header {
+        background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+        border-radius: 12px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border: 1px solid #c7d2fe;
+    }
+    
+    .plan-title {
+        font-weight: 700;
+        color: #4338ca;
+        font-size: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .plan-meta {
+        font-size: 0.8rem;
+        color: #6366f1;
+    }
+    
+    .plan-reasoning {
+        background: #f8fafc;
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin-top: 0.75rem;
+        font-size: 0.85rem;
+        color: #475569;
+        font-style: italic;
+        border-left: 3px solid #6366f1;
+    }
+    
+    .plan-confidence {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-left: 0.5rem;
+    }
+    
+    .confidence-high {
+        background: #d1fae5;
+        color: #065f46;
+    }
+    
+    .confidence-medium {
+        background: #fef3c7;
+        color: #92400e;
+    }
+    
+    .confidence-low {
+        background: #fee2e2;
+        color: #991b1b;
+    }
+    
+    .plan-updated-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        animation: pulse 2s infinite;
+        margin-left: 0.5rem;
+    }
+    
+    .turn-indicator {
+        background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+        color: white;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-weight: 600;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -231,40 +403,36 @@ def init_session_state():
         st.session_state.agent = None
     if "current_session" not in st.session_state:
         st.session_state.current_session = None
-    if "current_task_info" not in st.session_state:
-        st.session_state.current_task_info = None
-    if "execution_log" not in st.session_state:
-        st.session_state.execution_log = []
+    if "turn_result" not in st.session_state:
+        st.session_state.turn_result = None
     if "input_text" not in st.session_state:
         st.session_state.input_text = ""
 
 
-def get_agent() -> TaskAgent:
+def get_agent() -> ContinuousPlanningAgent:
     """Get or create the agent instance."""
     if st.session_state.agent is None:
         st.session_state.agent = create_agent()
     return st.session_state.agent
 
 
-def render_highlighted_text(text: str, tasks: List[Task]) -> str:
-    """
-    Render the original text with highlighting based on task status.
-    """
-    if not tasks:
-        return f'<div class="highlighted-text">{text}</div>'
+def render_highlighted_goal(goal_text: str, steps: List[PlanStep]) -> str:
+    """Render the goal text with highlighting based on step status."""
+    if not steps:
+        return f'<div class="goal-text">{goal_text}</div>'
     
-    # Build a list of spans with their status
+    # Build spans with their status
     spans = []
-    for task in tasks:
-        if task.text_span:
+    for step in steps:
+        if step.text_span:
             spans.append({
-                "start": task.text_span.start,
-                "end": task.text_span.end,
-                "status": task.status,
-                "task_id": task.id
+                "start": step.text_span.start,
+                "end": step.text_span.end,
+                "status": step.status,
+                "step_id": step.id
             })
     
-    # Sort spans by start position
+    # Sort by start position
     spans.sort(key=lambda x: x["start"])
     
     # Build highlighted HTML
@@ -274,76 +442,115 @@ def render_highlighted_text(text: str, tasks: List[Task]) -> str:
     for span in spans:
         # Add unhighlighted text before this span
         if span["start"] > last_end:
-            result.append(text[last_end:span["start"]])
+            result.append(goal_text[last_end:span["start"]])
         
-        # Determine CSS class based on status
+        # Determine CSS class
         status = span["status"]
-        if status == TaskStatus.COMPLETED:
+        if status == StepStatus.COMPLETED:
             css_class = "span-completed"
-        elif status in [TaskStatus.IN_PROGRESS, TaskStatus.AWAITING_CONFIRMATION]:
+        elif status == StepStatus.IN_PROGRESS:
             css_class = "span-current"
-        elif status == TaskStatus.FAILED:
+        elif status == StepStatus.FAILED:
             css_class = "span-failed"
-        elif status == TaskStatus.SKIPPED:
+        elif status == StepStatus.SKIPPED:
             css_class = "span-skipped"
         else:
             css_class = "span-pending"
         
-        # Add highlighted span
-        span_text = text[span["start"]:span["end"]]
+        span_text = goal_text[span["start"]:span["end"]]
         result.append(f'<span class="{css_class}">{span_text}</span>')
-        
         last_end = span["end"]
     
     # Add remaining text
-    if last_end < len(text):
-        result.append(text[last_end:])
+    if last_end < len(goal_text):
+        result.append(goal_text[last_end:])
     
     highlighted = "".join(result)
-    return f'<div class="highlighted-text">{highlighted}</div>'
+    return f'<div class="goal-text">{highlighted}</div>'
 
 
-def render_task_card(task: Task, is_current: bool = False) -> str:
-    """Render a task as a styled card."""
-    status_class = ""
-    if task.status == TaskStatus.COMPLETED:
-        status_class = "completed"
-        status_icon = "✅"
-    elif task.status in [TaskStatus.IN_PROGRESS, TaskStatus.AWAITING_CONFIRMATION]:
-        status_class = "current"
-        status_icon = "🔄"
-    elif task.status == TaskStatus.FAILED:
-        status_class = "failed"
-        status_icon = "❌"
-    elif task.status == TaskStatus.SKIPPED:
-        status_class = "skipped"
-        status_icon = "⏭️"
-    else:
-        status_icon = "⏳"
+def render_plan_step(step: PlanStep) -> str:
+    """Render a single plan step."""
+    status_class = {
+        StepStatus.COMPLETED: "completed",
+        StepStatus.IN_PROGRESS: "in-progress",
+        StepStatus.FAILED: "failed",
+        StepStatus.SKIPPED: "skipped",
+        StepStatus.PLANNED: ""
+    }.get(step.status, "")
+    
+    status_icon = {
+        StepStatus.COMPLETED: "✅",
+        StepStatus.IN_PROGRESS: "🔄",
+        StepStatus.FAILED: "❌",
+        StepStatus.SKIPPED: "⏭️",
+        StepStatus.PLANNED: "⬜"
+    }.get(step.status, "⬜")
+    
+    result_html = ""
+    if step.result:
+        result_preview = step.result[:100] + "..." if len(step.result) > 100 else step.result
+        result_html = f'<div class="step-result">Result: {result_preview}</div>'
+    elif step.error:
+        result_html = f'<div class="step-result" style="color: #dc2626;">Error: {step.error}</div>'
     
     return f"""
-    <div class="task-card {status_class}">
-        <div class="task-title">{status_icon} {task.title}</div>
-        <div class="task-description">{task.description}</div>
+    <div class="plan-step {status_class}">
+        <div class="step-description">{status_icon} {step.description}</div>
+        {result_html}
     </div>
     """
 
 
-def render_progress_bar(progress: Dict[str, int]) -> str:
-    """Render a progress bar."""
-    total = progress["total"]
-    if total == 0:
-        return ""
+def render_budget(session: Session) -> str:
+    """Render the budget indicators."""
+    budget = session.budget
     
-    completed = progress["completed"] + progress["skipped"]
-    percentage = (completed / total) * 100
+    # Token budget
+    token_pct = budget.token_percentage
+    token_class = "safe" if token_pct < 60 else ("warning" if token_pct < 85 else "danger")
+    
+    # Turn budget
+    turn_pct = budget.turn_percentage
+    turn_class = "safe" if turn_pct < 60 else ("warning" if turn_pct < 85 else "danger")
     
     return f"""
-    <div class="progress-container">
-        <div class="progress-bar" style="width: {percentage}%"></div>
+    <div class="budget-container">
+        <div class="budget-text">
+            <strong>💰 Budget</strong>
+        </div>
+        <div style="margin-top: 0.5rem;">
+            <div class="budget-text">Turns: {budget.current_turn}/{budget.max_turns}</div>
+            <div class="budget-bar">
+                <div class="budget-fill {turn_class}" style="width: {turn_pct}%"></div>
+            </div>
+        </div>
+        <div style="margin-top: 0.5rem;">
+            <div class="budget-text">Tokens: {budget.used_tokens:,}/{budget.max_tokens:,}</div>
+            <div class="budget-bar">
+                <div class="budget-fill {token_class}" style="width: {token_pct}%"></div>
+            </div>
+        </div>
     </div>
-    <div style="text-align: center; color: #6b7280; font-size: 0.875rem;">
-        {completed}/{total} tasks completed ({percentage:.0f}%)
+    """
+
+
+def render_action_card(action: Action) -> str:
+    """Render the proposed action card."""
+    params_html = "<br>".join([
+        f"&nbsp;&nbsp;{k}: {json.dumps(v)}" for k, v in action.parameters.items()
+    ]) if action.parameters else "&nbsp;&nbsp;(none)"
+    
+    return f"""
+    <div class="action-card">
+        <div class="action-label">🎬 Proposed Action</div>
+        <div class="action-tool">
+            <strong>Tool:</strong> {action.tool_category}/{action.tool_name}<br>
+            <strong>Parameters:</strong><br>{params_html}
+        </div>
+        <div class="action-reasoning">
+            <strong>Reasoning:</strong> {action.reasoning}
+        </div>
     </div>
     """
 
@@ -353,8 +560,8 @@ def main():
     init_session_state()
     
     # Header
-    st.markdown('<div class="main-header">🤖 Task Agent</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Intelligent task execution with AI-powered planning</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🤖 Continuous Planning Agent</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Adaptive planning with step-by-step execution</div>', unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
@@ -384,10 +591,13 @@ def main():
         st.markdown("### 📁 Sessions")
         
         agent = get_agent()
-        sessions = agent.task_manager.list_sessions()
+        sessions = agent.session_manager.list_sessions()
         
         if sessions:
-            session_options = {s["id"]: f"{s['id']} - {s['preview'][:30]}..." for s in sessions}
+            session_options = {
+                s["id"]: f"{s['id']} (Turn {s['turn']}) - {s['preview'][:25]}..."
+                for s in sessions
+            }
             selected_session = st.selectbox(
                 "Load existing session",
                 options=[""] + list(session_options.keys()),
@@ -395,15 +605,20 @@ def main():
             )
             
             if selected_session and st.button("Load Session"):
-                session = agent.task_manager.load_session(selected_session)
+                session = agent.load_session(selected_session)
                 if session:
                     st.session_state.current_session = session
-                    st.session_state.input_text = session.original_text
-                    # Restore conversation context for the agent
-                    agent.restore_session_context()
+                    st.session_state.turn_result = None
                     st.rerun()
         else:
             st.caption("No saved sessions")
+        
+        st.divider()
+        
+        # Budget settings (for new sessions)
+        st.markdown("### 💰 Budget Settings")
+        max_turns = st.slider("Max Turns", 10, 100, 50)
+        max_tokens = st.slider("Max Tokens (K)", 50, 300, 150) * 1000
         
         st.divider()
         
@@ -412,157 +627,297 @@ def main():
         st.markdown("""
         <div style="font-size: 0.875rem;">
             <span class="span-completed">Completed</span><br><br>
-            <span class="span-current">Current</span><br><br>
-            <span class="span-pending">Pending</span><br><br>
+            <span class="span-current">In Progress</span><br><br>
+            <span class="span-pending">Planned</span><br><br>
             <span class="span-failed">Failed</span><br><br>
             <span class="span-skipped">Skipped</span>
         </div>
         """, unsafe_allow_html=True)
     
-    # Main content area
-    col1, col2 = st.columns([3, 2])
+    # Main content
+    agent = get_agent()
+    session = st.session_state.current_session or agent.current_session
     
-    with col1:
-        st.markdown("### 📝 Input & Visualization")
+    if session is None:
+        # No active session - show input
+        st.markdown("### 🎯 Enter Your Goal")
         
-        # If no active session, show input
-        if st.session_state.current_session is None:
             input_text = st.text_area(
-                "Enter your tasks",
+            "What do you want to accomplish?",
                 value=st.session_state.input_text,
-                height=200,
-                placeholder="Enter the text containing tasks you want to execute...\n\nExample:\nI need to search for weather information for San Francisco, then calculate the average temperature for the week, and finally send a summary email to my team."
+            height=150,
+            placeholder="Describe your goal...\n\nExample:\nI need to search for weather in San Francisco, calculate the wind chill factor, and summarize the results."
             )
             
-            if st.button("🚀 Parse & Start", type="primary", use_container_width=True):
+        if st.button("🚀 Start Planning", type="primary", use_container_width=True):
                 if input_text.strip():
-                    with st.spinner("Analyzing text and extracting tasks..."):
-                        agent = get_agent()
-                        session, tasks = agent.initialize_session(input_text)
+                with st.spinner("Analyzing goal and creating initial plan..."):
+                    session = agent.start_session(
+                        goal_text=input_text,
+                        max_tokens=max_tokens,
+                        max_turns=max_turns
+                    )
                         st.session_state.current_session = session
                         st.session_state.input_text = input_text
                     st.rerun()
                 else:
-                    st.warning("Please enter some text first.")
-        
-        else:
-            # Show highlighted text
-            session = st.session_state.current_session
-            tasks = agent.task_manager.get_all_tasks()
-            
-            st.markdown("#### Original Text (Highlighted)")
-            highlighted_html = render_highlighted_text(session.original_text, tasks)
-            st.markdown(highlighted_html, unsafe_allow_html=True)
-            
-            # Progress
-            progress = session.get_progress()
-            st.markdown(render_progress_bar(progress), unsafe_allow_html=True)
-            
-            # Reset button
-            if st.button("🔄 New Session"):
-                st.session_state.current_session = None
-                st.session_state.current_task_info = None
-                st.session_state.execution_log = []
-                st.rerun()
+                st.warning("Please enter a goal first.")
     
-    with col2:
-        st.markdown("### 📋 Task List")
+    else:
+        # Active session - show visualization and controls
+        col1, col2 = st.columns([3, 2])
         
-        if st.session_state.current_session:
-            agent = get_agent()
-            tasks = agent.task_manager.get_all_tasks()
+        with col1:
+            # Goal section
+            st.markdown("### 🎯 Goal")
+            steps = session.plan.steps
+            highlighted = render_highlighted_goal(session.goal.original_text, steps)
+            st.markdown(f"""
+            <div class="goal-box">
+                <div class="goal-label">Your Objective</div>
+                {highlighted}
+            </div>
+            """, unsafe_allow_html=True)
             
-            if tasks:
-                for task in tasks:
-                    is_current = task.status in [TaskStatus.IN_PROGRESS, TaskStatus.AWAITING_CONFIRMATION]
-                    st.markdown(render_task_card(task, is_current), unsafe_allow_html=True)
+            # State section
+            st.markdown("### 📊 Current State")
+            st.markdown(f"""
+            <div class="state-card">
+                <div class="state-label">Agent's Understanding</div>
+                <div class="state-content">{session.state.summary or "Analyzing..."}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if session.state.completed_objectives:
+                st.markdown("**Completed:**")
+                for obj in session.state.completed_objectives:
+                    st.markdown(f"- ✅ {obj}")
+            
+            if session.state.blockers:
+                st.markdown("**Blockers:**")
+                for blocker in session.state.blockers:
+                    st.markdown(f"- ⚠️ {blocker}")
+            
+            # Budget
+            st.markdown(render_budget(session), unsafe_allow_html=True)
+        
+        with col2:
+            # Turn indicator
+            st.markdown(f"""
+            <div class="turn-indicator">
+                🔄 Turn {session.budget.current_turn} / {session.budget.max_turns}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Plan section with header
+            plan = session.plan
+            confidence_class = "high" if plan.confidence >= 0.7 else ("medium" if plan.confidence >= 0.4 else "low")
+            confidence_label = "High" if plan.confidence >= 0.7 else ("Medium" if plan.confidence >= 0.4 else "Low")
+            
+            # Check if we just updated the plan (turn result exists)
+            plan_updated = st.session_state.turn_result is not None
+            updated_badge = '<span class="plan-updated-badge">UPDATED</span>' if plan_updated else ''
+            
+            st.markdown(f"""
+            <div class="plan-header">
+                <div class="plan-title">
+                    📋 Current Plan {updated_badge}
+                    <span class="plan-confidence confidence-{confidence_class}">
+                        {confidence_label} Confidence ({plan.confidence:.0%})
+                    </span>
+                </div>
+                <div class="plan-meta">
+                    {len(plan.steps)} steps • Last updated: {plan.last_updated.strftime("%H:%M:%S") if plan.last_updated else "N/A"}
+                </div>
+                {f'<div class="plan-reasoning">💭 {plan.reasoning}</div>' if plan.reasoning else ''}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Plan steps with progress summary
+            if steps:
+                # Calculate progress
+                progress = plan.get_progress()
+                completed = progress["completed"]
+                total = progress["total"]
+                failed = progress["failed"]
+                skipped = progress["skipped"]
+                
+                # Progress bar
+                progress_pct = ((completed + skipped) / total * 100) if total > 0 else 0
+                st.markdown(f"""
+                <div style="margin-bottom: 1rem;">
+                    <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #64748b; margin-bottom: 0.25rem;">
+                        <span>✅ {completed} completed</span>
+                        <span>⬜ {progress["planned"]} remaining</span>
+                        {f'<span style="color: #dc2626;">❌ {failed} failed</span>' if failed > 0 else ''}
+                    </div>
+                    <div style="height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
+                        <div style="height: 100%; width: {progress_pct}%; background: linear-gradient(90deg, #10b981 0%, #059669 100%); border-radius: 3px;"></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Find current step index for "NEXT" indicator
+                current_idx = None
+                for i, step in enumerate(steps):
+                    if step.status == StepStatus.IN_PROGRESS:
+                        current_idx = i
+                        break
+                    elif step.status == StepStatus.PLANNED and current_idx is None:
+                        # First planned step is next
+                        current_idx = i
+                
+                for i, step in enumerate(steps):
+                    step_html = render_plan_step(step)
+                    # Add "NEXT" indicator
+                    if i == current_idx and step.status == StepStatus.PLANNED:
+                        step_html = step_html.replace(
+                            '</div>\n    </div>',
+                            '<div style="font-size: 0.75rem; color: #f59e0b; margin-top: 0.25rem;">⬅️ NEXT</div></div>\n    </div>'
+                        )
+                    st.markdown(step_html, unsafe_allow_html=True)
             else:
-                st.info("No tasks extracted yet.")
+                st.info("No plan yet.")
             
             st.divider()
             
-            # Execution controls
+            # Execution section
             st.markdown("### 🎮 Execution")
             
-            current_task_info = st.session_state.current_task_info
+            # Check session status
+            if session.status == SessionStatus.COMPLETED:
+                st.success("🎉 Goal achieved!")
+                if st.button("🔄 New Session"):
+                    st.session_state.current_session = None
+                    st.session_state.turn_result = None
+                    st.rerun()
             
-            # Get next task if we don't have one
-            if current_task_info is None:
-                next_task_info = agent.process_next_task()
-                if next_task_info:
-                    st.session_state.current_task_info = next_task_info
-                    current_task_info = next_task_info
+            elif session.status == SessionStatus.BUDGET_EXCEEDED:
+                st.error("💸 Budget exceeded!")
+                if st.button("🔄 New Session"):
+                    st.session_state.current_session = None
+                    st.session_state.turn_result = None
+                    st.rerun()
             
-            if current_task_info:
-                task = current_task_info["task"]
-                plan = current_task_info["plan"]
-                explanation = current_task_info["explanation"]
+            elif session.status == SessionStatus.ABORTED:
+                st.warning("🛑 Session aborted.")
+                if st.button("🔄 New Session"):
+                    st.session_state.current_session = None
+                    st.session_state.turn_result = None
+                    st.rerun()
+            
+            else:
+                # Get or show turn result
+                turn_result = st.session_state.turn_result
                 
-                st.markdown("#### Next Task")
-                st.markdown(f'<div class="plan-card">{explanation}</div>', unsafe_allow_html=True)
+                if turn_result is None:
+                    # Run a turn to get proposed action
+                    if st.button("▶️ Next Turn", type="primary", use_container_width=True):
+                        with st.spinner("Evaluating and planning..."):
+                            turn_result = agent.run_turn()
+                            st.session_state.turn_result = turn_result
+                            st.session_state.current_session = agent.current_session
+                        st.rerun()
                 
-                col_confirm, col_skip = st.columns(2)
-                
-                with col_confirm:
-                    if st.button("✅ Confirm & Execute", type="primary", use_container_width=True):
-                        with st.spinner("Executing..."):
-                            result = agent.confirm_and_execute(task.id, plan)
+                else:
+                    # Show turn result
+                    if turn_result.status == "completed":
+                        st.success("🎉 Goal achieved!")
+                        st.markdown(f"**Reasoning:** {turn_result.reasoning}")
+                        st.session_state.turn_result = None
+                        st.session_state.current_session = agent.current_session
+                        st.rerun()
+                    
+                    elif turn_result.status == "awaiting_approval":
+                        action = turn_result.proposed_action
                         
-                        # Log the execution
-                        st.session_state.execution_log.append({
-                            "task": task.title,
-                            "result": result
-                        })
+                        # Show agent's overall reasoning for this turn
+                        if turn_result.reasoning:
+                            st.markdown(f"""
+                            <div class="state-card" style="border-left: 4px solid #6366f1;">
+                                <div class="state-label">🧠 Agent's Analysis (Turn {session.budget.current_turn})</div>
+                                <div class="state-content">{turn_result.reasoning}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
                         
-                        # Clear current task info to get next
-                        st.session_state.current_task_info = None
+                        st.markdown(render_action_card(action), unsafe_allow_html=True)
                         
-                        # Refresh session data
-                        st.session_state.current_session = agent.task_manager.current_session
+                        col_approve, col_skip, col_abort = st.columns(3)
+                        
+                        with col_approve:
+                            if st.button("✅ Approve", type="primary", use_container_width=True):
+                                with st.spinner("Executing..."):
+                                    result = agent.execute_action(action)
+                                
+                                st.session_state.turn_result = None
+                                st.session_state.current_session = agent.current_session
+                                
+                                if result.success:
+                                    st.toast("Action completed successfully!", icon="✅")
+                                else:
+                                    st.toast(f"Action failed: {result.error}", icon="❌")
+                                
                         st.rerun()
                 
                 with col_skip:
                     if st.button("⏭️ Skip", use_container_width=True):
-                        agent.skip_task(task.id)
-                        st.session_state.current_task_info = None
-                        st.session_state.current_session = agent.task_manager.current_session
+                                agent.skip_action(action)
+                                st.session_state.turn_result = None
+                                st.session_state.current_session = agent.current_session
+                                st.rerun()
+                        
+                        with col_abort:
+                            if st.button("🛑 Abort", use_container_width=True):
+                                agent.abort_session()
+                                st.session_state.turn_result = None
+                                st.session_state.current_session = agent.current_session
+                                st.rerun()
+                    
+                    elif turn_result.status == "no_action":
+                        st.warning("No action available")
+                        st.markdown(f"**Reasoning:** {turn_result.reasoning}")
+                        if turn_result.error:
+                            st.error(f"**Issue:** {turn_result.error}")
+                        
+                        if st.button("🔄 Try Again"):
+                            st.session_state.turn_result = None
+                            st.rerun()
+                    
+                    elif turn_result.status == "budget_exceeded":
+                        st.error("💸 Budget exceeded!")
+                        st.session_state.turn_result = None
+                        st.session_state.current_session = agent.current_session
                         st.rerun()
             
-            else:
-                # Check if all tasks are done
-                progress = agent.task_manager.current_session.get_progress()
-                if progress["pending"] == 0 and progress["in_progress"] == 0:
-                    st.success("🎉 All tasks completed!")
-                else:
-                    st.info("No pending tasks to execute.")
-            
-            # Execution log
-            if st.session_state.execution_log:
+            # History section
+            if session.history:
                 st.divider()
-                st.markdown("### 📜 Execution Log")
+                st.markdown("### 📜 Recent History")
                 
-                for i, log_entry in enumerate(reversed(st.session_state.execution_log[-5:])):
-                    exec_result = log_entry["result"]["execution_result"]
-                    status = "✅" if exec_result.get("success") else "❌"
-                    st.markdown(f"**{status} {log_entry['task']}**")
-                    
-                    if exec_result.get("success"):
-                        with st.expander("View Result"):
-                            st.json(exec_result.get("result", {}))
-                    else:
-                        st.error(exec_result.get("error", "Unknown error"))
+                for entry in reversed(session.history[-3:]):
+                    status = "✅" if entry.result.get("success") else "❌"
+                    st.markdown(f"""
+                    <div class="history-entry">
+                        <div class="history-turn">Turn {entry.turn}</div>
+                        <div class="history-action">{status} {entry.action.tool_category}/{entry.action.tool_name}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
             
             # Agent notes
-            if agent.task_manager.current_session.agent_notes:
+            if session.agent_notes:
                 st.divider()
                 st.markdown("### 🤖 Agent Notes")
-                for note in agent.task_manager.current_session.agent_notes[-3:]:
+                for note in session.agent_notes[-3:]:
                     st.markdown(f'<div class="agent-note">{note}</div>', unsafe_allow_html=True)
         
-        else:
-            st.info("Enter text and click 'Parse & Start' to begin.")
+        # New session button at bottom
+        st.divider()
+        if st.button("🔄 Start New Session", use_container_width=True):
+            st.session_state.current_session = None
+            st.session_state.turn_result = None
+            agent.session_manager.current_session = None
+            st.rerun()
 
 
 if __name__ == "__main__":
     main()
-

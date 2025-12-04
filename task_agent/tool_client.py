@@ -147,10 +147,8 @@ class ToolRegistryClient:
         try:
             url = f"{self.base_url}/{category}/{function_name}"
             
-            if params:
-                response = self.client.post(url, json=params)
-            else:
-                response = self.client.post(url)
+            # Always send a JSON body (API requires it even for no-param functions)
+            response = self.client.post(url, json=params or {})
             
             response.raise_for_status()
             return {
@@ -172,6 +170,7 @@ class ToolRegistryClient:
         """
         Get a formatted summary of all available tools.
         Useful for providing context to the AI agent.
+        Includes parameter details so the agent knows exact field names.
         """
         categories = self.list_categories()
         
@@ -190,17 +189,39 @@ class ToolRegistryClient:
                 summary_parts.append(f"\n[{cat}]")
                 for func in funcs:
                     # Handle both dict and string responses
-                    if isinstance(func, str):
-                        summary_parts.append(f"  - {func}")
-                        total_count += 1
-                    else:
-                        name = func.get("name", "unknown")
-                        desc = func.get("description", "No description")
+                    func_name = func if isinstance(func, str) else func.get("name", "unknown")
+                    
+                    # Fetch full details to get parameters
+                    func_details = self.get_function(func_name)
+                    
+                    if func_details:
+                        name = func_details.get("name", func_name)
+                        desc = func_details.get("description", "No description")
+                        params = func_details.get("parameters", {})
+                        
                         # Truncate long descriptions
                         if len(desc) > 100:
                             desc = desc[:97] + "..."
+                        
                         summary_parts.append(f"  - {name}: {desc}")
-                        total_count += 1
+                        
+                        # Add parameter details
+                        if params:
+                            param_strs = []
+                            for param_name, param_info in params.items():
+                                if isinstance(param_info, dict):
+                                    param_type = param_info.get("type", "any")
+                                    required = param_info.get("required", False)
+                                    req_str = " (required)" if required else ""
+                                    param_strs.append(f"{param_name}: {param_type}{req_str}")
+                                else:
+                                    param_strs.append(f"{param_name}")
+                            if param_strs:
+                                summary_parts.append(f"      Parameters: {', '.join(param_strs)}")
+                    else:
+                        summary_parts.append(f"  - {func_name}")
+                    
+                    total_count += 1
         
         # Insert total count at the beginning
         summary_parts.insert(1, f"Total Functions: {total_count}")

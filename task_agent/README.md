@@ -1,27 +1,86 @@
-# 🤖 Task Agent
+# 🤖 Continuous Planning Agent
 
-An intelligent task execution system that parses natural language text into actionable tasks, executes them step-by-step with user confirmation, and provides real-time visual feedback.
+An intelligent task execution system using **continuous re-planning**. Instead of parsing all tasks upfront, the agent evaluates the situation each turn, updates its plan based on results, and proposes one action at a time for user approval.
 
-## Features
+## Key Features
 
-- **Natural Language Task Parsing**: Input free-form text and let AI extract actionable tasks
-- **Visual Progress Tracking**: Color-coded highlighting shows execution progress on original text
-- **Step-by-Step Execution**: Confirm each task before execution for full control
-- **External Tool Integration**: Connects to a tool registry API for executing real actions
-- **Dynamic Task Management**: AI reviews progress and can add/modify/remove tasks as needed
-- **Session Persistence**: Save and resume task sessions
+- **Continuous Re-planning**: Agent re-evaluates and updates the plan every turn based on actual results
+- **Goal Tracking**: Original objective always visible, never forgotten
+- **State Visualization**: See the agent's current understanding of the situation
+- **Dynamic Plan Updates**: Plan adapts as execution progresses
+- **Token/Turn Budget**: Prevents runaway execution with configurable limits
+- **History Summarization**: Manages context length for long-running sessions
+- **Text Highlighting**: Visual mapping of plan steps to original goal text
+- **Session Persistence**: Save and resume sessions
 
 ## Architecture
 
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│                         GOAL (Immutable)                        │
+│  Original user request - always visible, never forgotten        │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    MAIN LOOP (while not done)                   │
+│                                                                 │
+│  1. EVALUATE & PLAN                                             │
+│     → Assess current state                                      │
+│     → Update plan based on results                              │
+│     → Propose next action                                       │
+│                                                                 │
+│  2. USER APPROVAL                                               │
+│     [Approve] [Skip] [Abort]                                    │
+│                                                                 │
+│  3. EXECUTE                                                     │
+│     → Run action via tool API                                   │
+│     → Update state with results                                 │
+│     → Manage history & budget                                   │
+│                                                                 │
+│  4. CHECK COMPLETION                                            │
+│     → Goal achieved? Budget exceeded?                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Core Components
+
+```
 task_agent/
-├── app.py              # Streamlit UI
-├── agent.py            # AI Agent (Claude Sonnet 4.5)
+├── app.py              # Streamlit UI with plan/state visualization
+├── agent.py            # ContinuousPlanningAgent (Claude-powered)
+├── session_manager.py  # Session state & persistence
 ├── tool_client.py      # Tool Registry API client
-├── task_manager.py     # Task list management & persistence
-├── models.py           # Data models
+├── models.py           # Data models (Goal, Plan, State, Action, etc.)
 ├── pyproject.toml      # Project config & dependencies (uv)
 └── task_data/          # Session storage (auto-created)
+```
+
+## Data Models
+
+### Session
+```python
+Session:
+  - goal: Goal                    # Original objective (immutable)
+  - state: AgentState             # Agent's current understanding
+  - plan: Plan                    # Current plan (updated each turn)
+  - history: List[HistoryEntry]   # Execution history
+  - budget: TokenBudget           # Token/turn limits
+  - status: SessionStatus         # active/completed/aborted/budget_exceeded
+```
+
+### Plan & State
+```python
+Plan:
+  - steps: List[PlanStep]    # Ordered steps with status
+  - reasoning: str           # Why this plan
+  - confidence: float        # 0-1
+
+AgentState:
+  - summary: str                    # Current situation understanding
+  - completed_objectives: List[str] # What's done
+  - blockers: List[str]             # Any issues
+  - context: Dict                   # Relevant data
 ```
 
 ## Prerequisites
@@ -29,18 +88,17 @@ task_agent/
 1. **Python 3.10+**
 2. **uv**: Fast Python package manager - [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
 3. **Anthropic API Key**: Set the `ANTHROPIC_API_KEY` environment variable
-4. **Tool Registry API**: Running at `localhost:9999` (or configure a different URL)
+4. **Tool Registry API**: Running at `localhost:9999` (or configure different URL)
 
 ## Installation
 
 ```bash
-# Navigate to the project
 cd task_agent
 
-# Install dependencies with uv
+# Install dependencies
 uv sync
 
-# Set your Anthropic API key
+# Set your API key
 export ANTHROPIC_API_KEY="your-api-key-here"
 ```
 
@@ -49,131 +107,97 @@ export ANTHROPIC_API_KEY="your-api-key-here"
 ### Start the Application
 
 ```bash
-# Run with uv
 uv run streamlit run app.py
 ```
 
-The app will open in your browser at `http://localhost:8501`
+Opens at `http://localhost:8501`
 
 ### Workflow
 
-1. **Enter Text**: Type or paste text containing tasks you want to execute
-2. **Parse Tasks**: Click "Parse & Start" to let AI extract tasks
-3. **Review**: See tasks highlighted in the original text and listed in the sidebar
-4. **Execute**: For each task:
-   - Review the AI's execution plan
-   - Click "Confirm & Execute" to proceed
-   - Or "Skip" to move to the next task
-5. **Monitor**: Watch the progress with color-coded highlighting:
-   - 🟢 **Green**: Completed tasks
-   - 🟡 **Yellow**: Current task (pulsing)
-   - 🔵 **Blue**: Pending tasks
-   - 🔴 **Red**: Failed tasks
-   - ⬜ **Gray**: Skipped tasks
+1. **Enter Goal**: Describe what you want to accomplish
+2. **Review Initial Plan**: Agent creates a plan with steps linked to your goal text
+3. **Execute Turn by Turn**:
+   - Click "Next Turn" to get the agent's proposed action
+   - Review the action, reasoning, and updated plan
+   - Click "Approve" to execute, "Skip" to skip, or "Abort" to stop
+4. **Watch Progress**: 
+   - Goal text highlights show which parts are completed
+   - State summary shows agent's understanding
+   - Budget indicators show remaining turns/tokens
 
-### Example Input
+### Example Session
 
-```
-I need to check the current weather in San Francisco, then calculate 
-the square root of 144, and finally list all available file operations.
-```
+**Goal**: "Search for weather in Tokyo, calculate if I need an umbrella based on rain chance, and tell me what to wear"
+
+**Turn 1**: 
+- Agent proposes: `weather/search(city="Tokyo")`
+- You approve → Gets weather data
+
+**Turn 2**:
+- Agent sees rain chance is 75%
+- Updates plan: adds "recommend rain gear"
+- Proposes: `calculation/evaluate(expression="75 > 50")`
+- You approve → Returns true
+
+**Turn 3**:
+- Agent proposes final recommendation action
+- Plan adapts based on actual weather data
 
 ## Configuration
 
-### Environment Variables
+### Budget Settings
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ANTHROPIC_API_KEY` | Your Anthropic API key | Required |
+In the UI sidebar:
+- **Max Turns**: 5-50 (default: 20)
+- **Max Tokens**: 10K-100K (default: 50K)
 
 ### In-Code Configuration
 
-In `agent.py`:
-- `model`: Change the Claude model (default: `claude-sonnet-4-5-20250929`)
+```python
+# agent.py
+model = "claude-sonnet-4-5-20250929"  # Claude model
+max_history_entries = 10              # Before summarization
+summarize_after = 7                   # Trigger summarization
 
-In `app.py` or when creating the agent:
-- `storage_dir`: Change session storage location (default: `./task_data`)
-- `tool_api_url`: Change tool registry URL (default: `http://localhost:9999`)
+# session_manager.py
+storage_dir = "./task_data"           # Session storage
+```
+
+## How It Differs from Traditional Agent Patterns
+
+| Traditional | Continuous Planning |
+|-------------|---------------------|
+| Parse all tasks upfront | Re-evaluate each turn |
+| Fixed task list | Dynamic plan updates |
+| Tasks might become stale | Adapts to actual results |
+| Error recovery is awkward | Natural plan adjustment |
 
 ## Tool Registry API
 
-The agent expects a tool registry API with the following endpoints:
+Expected endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/functions` | GET | List all functions |
 | `/functions/{name}` | GET | Get function details |
-| `/functions/category/{category}` | GET | List functions by category |
-| `/categories` | GET | List all categories |
-| `/functions/search?q={query}` | GET | Search functions |
-| `/{category}/{function_name}` | POST | Execute a function |
-
-## Data Models
-
-### Task
-
-```python
-Task:
-  - id: str
-  - title: str
-  - description: str
-  - status: TaskStatus (pending/in_progress/completed/failed/skipped)
-  - text_span: TextSpan (start, end, text)
-  - result: str (execution result)
-  - tool_used: str
-  - tool_params: dict
-```
-
-### TaskSession
-
-```python
-TaskSession:
-  - id: str
-  - original_text: str
-  - tasks: List[Task]
-  - agent_notes: List[str]
-```
+| `/categories` | GET | List categories |
+| `/{category}/{function}` | POST | Execute function |
 
 ## Development
 
 ### Adding Dependencies
 
 ```bash
-# Add a new dependency
 uv add <package-name>
-
-# Add a dev dependency
 uv add --dev <package-name>
 ```
 
-### Project Structure
+### Key Extension Points
 
-- **models.py**: Data classes for Task, TaskSession, TextSpan, etc.
-- **tool_client.py**: HTTP client for the tool registry API
-- **task_manager.py**: Task CRUD operations and file persistence
-- **agent.py**: AI agent with Claude integration for parsing, planning, and execution
-- **app.py**: Streamlit UI
-
-### Adding New Features
-
-1. **New Task Operations**: Extend `TaskManager` class
-2. **Custom Tool Handling**: Modify `ToolRegistryClient`
-3. **AI Behavior**: Update prompts in `TaskAgent`
-4. **UI Components**: Add to `app.py`
-
-## Troubleshooting
-
-### Tool API Connection Failed
-- Ensure the tool registry is running at the configured URL
-- Check network/firewall settings
-
-### Tasks Not Parsing Correctly
-- Ensure your text contains clear, actionable items
-- The AI works best with explicit task descriptions
-
-### API Key Issues
-- Verify `ANTHROPIC_API_KEY` is set correctly
-- Check API key permissions and quota
+1. **Custom evaluation logic**: Modify `_evaluate_and_plan()` in `agent.py`
+2. **New UI components**: Add to `app.py`
+3. **State persistence**: Extend `SessionManager`
+4. **History management**: Customize summarization in `_summarize_history()`
 
 ## License
 

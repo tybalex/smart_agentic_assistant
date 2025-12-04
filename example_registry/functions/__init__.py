@@ -137,7 +137,12 @@ from .ai import (
 # Support (Zendesk)
 from .support import (
     zendesk_create_ticket,
-    zendesk_update_ticket
+    zendesk_get_ticket,
+    zendesk_update_ticket,
+    zendesk_add_comment,
+    zendesk_list_tickets,
+    zendesk_search_tickets,
+    zendesk_close_ticket
 )
 
 
@@ -242,7 +247,12 @@ FUNCTION_MAP = {
     
     # Support
     "zendesk_create_ticket": zendesk_create_ticket,
+    "zendesk_get_ticket": zendesk_get_ticket,
     "zendesk_update_ticket": zendesk_update_ticket,
+    "zendesk_add_comment": zendesk_add_comment,
+    "zendesk_list_tickets": zendesk_list_tickets,
+    "zendesk_search_tickets": zendesk_search_tickets,
+    "zendesk_close_ticket": zendesk_close_ticket,
 }
 
 
@@ -359,7 +369,12 @@ __all__ = [
     
     # Support
     "zendesk_create_ticket",
+    "zendesk_get_ticket",
     "zendesk_update_ticket",
+    "zendesk_add_comment",
+    "zendesk_list_tickets",
+    "zendesk_search_tickets",
+    "zendesk_close_ticket",
     
     # Utilities
     "FUNCTION_MAP",

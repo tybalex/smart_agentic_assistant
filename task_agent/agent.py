@@ -1,666 +1,744 @@
 """
-AI Agent powered by Claude Sonnet 4.5.
-Handles task parsing, planning, and execution.
+Continuous Planning Agent powered by Claude.
+Implements an adaptive planning loop that re-evaluates and updates plans each turn.
 """
 
 import os
 import json
+import logging
 from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
 from anthropic import Anthropic
 
-from models import Task, TaskSession, TaskStatus, TextSpan, generate_id
-from task_manager import TaskManager
+from models import (
+    Session, Goal, AgentState, Plan, PlanStep, Action,
+    HistoryEntry, HistorySummary, TokenBudget, TurnResult, ExecutionResult,
+    SessionStatus, StepStatus, TextSpan, generate_id
+)
+from session_manager import SessionManager
 from tool_client import ToolRegistryClient
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-class TaskAgent:
+
+class ContinuousPlanningAgent:
     """
-    AI Agent that parses user text into tasks and executes them.
-    Uses Claude Sonnet 4.5 for intelligence.
+    AI Agent that continuously evaluates, plans, and executes.
+    Each turn: Evaluate state → Update plan → Propose action → Execute with approval.
     """
     
     def __init__(
         self,
-        task_manager: TaskManager,
+        session_manager: SessionManager,
         tool_client: ToolRegistryClient,
         model: str = "claude-sonnet-4-5-20250929"
     ):
-        self.task_manager = task_manager
+        self.session_manager = session_manager
         self.tool_client = tool_client
         self.model = model
-        self.client = Anthropic()  # Uses ANTHROPIC_API_KEY env var
+        
+        # Check for API key
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.error("ANTHROPIC_API_KEY environment variable is not set!")
+            logger.error("Please set it with: export ANTHROPIC_API_KEY='your-key-here'")
+            raise ValueError(
+                "ANTHROPIC_API_KEY environment variable is not set. "
+                "Please set it before running the agent."
+            )
+        
+        logger.info(f"Initializing Anthropic client with model: {model}")
+        logger.info(f"API key found: {api_key[:8]}...{api_key[-4:]}")
+        self.client = Anthropic(api_key=api_key)
         
         # Cache available tools
         self._tools_cache: Optional[str] = None
         self._tools_list: Optional[List[Dict]] = None
+        self._available_categories: set = set()
+        self._available_tools: Dict[str, bool] = {}
         
-        # Conversation history for maintaining context across task executions
-        self._conversation_history: List[Dict[str, str]] = []
-        self._system_prompt: Optional[str] = None
+        # History summarization threshold
+        self.max_history_entries = 10
+        self.summarize_after = 7
+    
+    @property
+    def current_session(self) -> Optional[Session]:
+        return self.session_manager.current_session
     
     def _get_tools_context(self) -> str:
         """Get formatted context about available tools."""
         if self._tools_cache is None:
             self._tools_cache = self.tool_client.get_tools_summary()
             self._tools_list = self.tool_client.list_all_functions()
+            # Cache available categories and function names for validation
+            self._available_categories = set(self.tool_client.list_categories())
+            self._available_tools = {}
+            for cat in self._available_categories:
+                funcs = self.tool_client.get_functions_by_category(cat)
+                for func in funcs:
+                    if isinstance(func, str):
+                        self._available_tools[f"{cat}/{func}"] = True
+                    else:
+                        self._available_tools[f"{cat}/{func.get('name', '')}"] = True
+            logger.info(f"Loaded {len(self._available_tools)} tools from registry")
         return self._tools_cache
+    
+    def _validate_tool(self, category: str, tool_name: str) -> Tuple[bool, str]:
+        """
+        Validate that a tool exists in the registry.
+        Returns (is_valid, error_message).
+        """
+        # Ensure tools are loaded
+        self._get_tools_context()
+        
+        tool_key = f"{category}/{tool_name}"
+        
+        if category not in self._available_categories:
+            return False, f"Category '{category}' does not exist in tool registry. Available categories: {list(self._available_categories)}"
+        
+        if tool_key not in self._available_tools:
+            available_in_cat = [k.split('/')[1] for k in self._available_tools if k.startswith(f"{category}/")]
+            return False, f"Tool '{tool_name}' does not exist in category '{category}'. Available tools: {available_in_cat}"
+        
+        return True, ""
     
     def _call_claude(
         self,
         system_prompt: str,
         user_message: str,
         temperature: float = 0.3
-    ) -> str:
-        """Make a single call to Claude API (stateless)."""
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            temperature=temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}]
-        )
-        return response.content[0].text
+    ) -> Tuple[str, int]:
+        """Make a call to Claude API. Returns (response, tokens_used)."""
+        logger.info(f"Calling Claude API (model: {self.model})")
+        logger.debug(f"System prompt length: {len(system_prompt)} chars")
+        logger.debug(f"User message length: {len(user_message)} chars")
+        
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                temperature=temperature,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}]
+            )
+            
+            # Estimate token usage
+            tokens_used = response.usage.input_tokens + response.usage.output_tokens
+            logger.info(f"Claude response received. Tokens used: {tokens_used}")
+            
+            return response.content[0].text, tokens_used
+        except Exception as e:
+            logger.error(f"Error calling Claude API: {e}")
+            raise
     
-    def _call_claude_with_history(
+    def _parse_json_response(self, response: str) -> Dict[str, Any]:
+        """Parse JSON from Claude's response, handling markdown code blocks."""
+        response = response.strip()
+        if response.startswith("```"):
+            lines = response.split("\n")
+            response = "\n".join(lines[1:])
+        if response.endswith("```"):
+            response = response.rsplit("```", 1)[0]
+        response = response.strip()
+        return json.loads(response)
+    
+    # ===================
+    # Session Initialization
+    # ===================
+    
+    def start_session(
         self,
-        user_message: str,
-        temperature: float = 0.3
-    ) -> str:
+        goal_text: str,
+        max_tokens: int = 50000,
+        max_turns: int = 20
+    ) -> Session:
         """
-        Make a call to Claude using conversation history.
-        Maintains context across multiple task executions.
+        Start a new session with the user's goal.
+        Creates initial plan and state.
         """
-        # Add the new user message to history
-        self._conversation_history.append({
-            "role": "user",
-            "content": user_message
-        })
-        
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            temperature=temperature,
-            system=self._system_prompt,
-            messages=self._conversation_history
+        # Create the session
+        session = self.session_manager.create_session(
+            goal_text=goal_text,
+            max_tokens=max_tokens,
+            max_turns=max_turns
         )
         
-        assistant_message = response.content[0].text
+        # Generate initial plan and text spans
+        self._generate_initial_plan(goal_text)
         
-        # Add assistant response to history
-        self._conversation_history.append({
-            "role": "assistant",
-            "content": assistant_message
-        })
+        self.session_manager.add_agent_note(
+            f"Session started. Goal: {goal_text[:100]}..."
+        )
         
-        return assistant_message
+        return session
     
-    def _init_conversation(self, original_text: str, tasks: List[Task]) -> None:
-        """Initialize the conversation context for task execution."""
+    def _generate_initial_plan(self, goal_text: str) -> None:
+        """Generate the initial plan and identify text spans."""
+        logger.info("Generating initial plan...")
+        logger.info(f"Goal: {goal_text[:100]}...")
+        
         tools_context = self._get_tools_context()
+        logger.debug(f"Tools context loaded: {len(tools_context)} chars")
         
-        task_list = "\n".join([
-            f"{i+1}. [{t.id}] {t.title}: {t.description}"
-            for i, t in enumerate(tasks)
-        ])
-        
-        self._system_prompt = f"""You are an intelligent task execution agent. You help users accomplish tasks by selecting and using available tools.
+        system_prompt = f"""You are a planning assistant. Your job is to create an initial plan for achieving the user's goal.
 
-AVAILABLE TOOLS:
+AVAILABLE TOOLS (from tool registry at localhost:9999):
 {tools_context}
 
-ORIGINAL USER REQUEST:
-{original_text}
+CRITICAL CONSTRAINTS:
+- You can ONLY use tools listed above from the tool registry
+- DO NOT make up or invent tools that are not in the list
+- DO NOT suggest making HTTP requests or API calls directly
+- DO NOT suggest using any external services not in the tool registry
+- If a required capability is not available in the tools, note it as a blocker
 
-EXTRACTED TASKS:
-{task_list}
+INSTRUCTIONS:
+1. Break down the goal into actionable steps that can be accomplished with the AVAILABLE TOOLS ONLY
+2. For each step, identify the EXACT text span in the original goal that it corresponds to
+3. Order steps logically (dependencies first)
+4. If a step cannot be done with available tools, mark it clearly and explain why
 
-YOUR RESPONSIBILITIES:
-1. For each task, determine the best tool to use and its parameters
-2. Remember the results of previous tasks - they may be needed for subsequent tasks
-3. If a task depends on a previous result, use that result appropriately
-4. If no suitable tool exists, explain what could be done alternatively
-5. Be precise with parameter values based on the context
-
-When planning a task, respond with a JSON object:
+Your response must be valid JSON:
 {{
-  "can_execute": true/false,
-  "tool_category": "<category>",
-  "tool_name": "<name>",
-  "parameters": {{}},
-  "reasoning": "<explanation>",
-  "alternative_approach": "<if cannot execute>"
+    "state_summary": "Initial understanding of the goal...",
+    "plan": [
+        {{
+            "description": "What this step accomplishes",
+            "text_span": {{
+                "start": <start char index>,
+                "end": <end char index>,
+                "text": "<exact text from goal>"
+            }}
+        }},
+        ...
+    ],
+    "reasoning": "Why this plan makes sense...",
+    "confidence": 0.0-1.0
 }}
 
-When reviewing progress, respond with a JSON object:
-{{
-  "updates_needed": true/false,
-  "reasoning": "<analysis>",
-  "new_tasks": [],
-  "tasks_to_remove": [],
-  "tasks_to_modify": [],
-  "agent_note": "<observations>"
-}}"""
-        
-        # Clear and initialize conversation history
-        self._conversation_history = []
-    
-    def _add_execution_result_to_history(self, task: Task, result: Dict[str, Any]) -> None:
-        """Add task execution result to conversation history."""
-        if result.get("success"):
-            result_summary = json.dumps(result.get("result", {}), indent=2)
-            message = f"""TASK COMPLETED: {task.title}
-Tool used: {task.tool_used}
-Parameters: {json.dumps(task.tool_params, indent=2) if task.tool_params else 'None'}
-Result:
-{result_summary}"""
-        else:
-            message = f"""TASK FAILED: {task.title}
-Error: {result.get('error', 'Unknown error')}"""
-        
-        # Add as a "user" message to inform the assistant of results
-        self._conversation_history.append({
-            "role": "user",
-            "content": message
-        })
-        # Add acknowledgment to keep conversation valid
-        self._conversation_history.append({
-            "role": "assistant",
-            "content": f"Understood. Task '{task.title}' {'completed successfully' if result.get('success') else 'failed'}. I will take this into account for subsequent tasks."
-        })
-    
-    def parse_tasks_from_text(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Parse user input text to extract tasks with their text spans.
-        Returns a list of task dictionaries ready to be added to the session.
-        """
-        tools_context = self._get_tools_context()
-        
-        system_prompt = f"""You are a task parsing assistant. Your job is to analyze user input text and extract actionable tasks.
+Only respond with JSON, no additional text."""
 
-You have access to the following tools that can be used to execute tasks:
-{tools_context}
-
-IMPORTANT GUIDELINES:
-1. Extract tasks that can be accomplished using the available tools
-2. For each task, identify the EXACT text span in the original input
-3. Break down complex requests into smaller, actionable steps if needed
-4. Consider the logical order of tasks (dependencies)
-5. Be practical - if no tool can handle a part of the request, note it but still create a task
-
-Your response must be a valid JSON array with the following structure:
-[
-  {{
-    "title": "Short task title",
-    "description": "Detailed description of what needs to be done",
-    "text_span": {{
-      "start": <start character index in original text>,
-      "end": <end character index in original text>,
-      "text": "<exact text from original that this task corresponds to>"
-    }},
-    "suggested_tool": "<tool name if you know which tool to use, or null>",
-    "suggested_category": "<tool category if known, or null>"
-  }},
-  ...
-]
-
-Only respond with the JSON array, no additional text."""
-
-        user_message = f"""Please analyze the following text and extract all tasks:
+        user_message = f"""Create a plan for this goal:
 
 ---
-{text}
+{goal_text}
 ---
 
-Remember to:
-1. Identify the exact character positions for each task's text span
-2. Order tasks logically
-3. Be specific in descriptions
-4. Suggest tools when possible"""
+Remember to identify exact text spans for each step."""
 
         try:
-            response = self._call_claude(system_prompt, user_message)
-            # Clean up response - remove markdown code blocks if present
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1]
-            if response.endswith("```"):
-                response = response.rsplit("```", 1)[0]
-            response = response.strip()
+            response, tokens = self._call_claude(system_prompt, user_message)
+            self.session_manager.add_tokens_used(tokens)
+            logger.info(f"Initial plan response received")
             
-            tasks = json.loads(response)
-            return tasks
-        except json.JSONDecodeError as e:
-            print(f"Error parsing Claude response as JSON: {e}")
-            print(f"Raw response: {response}")
-            return []
+            data = self._parse_json_response(response)
+            logger.info(f"Parsed plan with {len(data.get('plan', []))} steps")
+            
+            # Update state
+            state = AgentState(
+                summary=data.get("state_summary", "Analyzing goal..."),
+                completed_objectives=[],
+                blockers=[],
+                context={}
+            )
+            self.session_manager.update_state(state)
+            
+            # Create plan
+            self.session_manager.set_plan_from_data(
+                plan_data=data.get("plan", []),
+                reasoning=data.get("reasoning", ""),
+                confidence=data.get("confidence", 0.5)
+            )
+            logger.info("Initial plan created successfully")
+            
         except Exception as e:
-            print(f"Error calling Claude: {e}")
-            return []
+            logger.error(f"Error generating initial plan: {e}", exc_info=True)
+            # Create a basic single-step plan
+            self.session_manager.set_plan_from_data(
+                plan_data=[{"description": f"Complete: {goal_text[:100]}"}],
+                reasoning="Fallback plan due to parsing error",
+                confidence=0.3
+            )
     
-    def plan_task_execution(self, task: Task) -> Dict[str, Any]:
-        """
-        Plan how to execute a specific task.
-        Returns tool selection and parameters.
-        Uses conversation history to maintain context from previous tasks.
-        """
-        user_message = f"""PLAN NEXT TASK:
-
-Task ID: {task.id}
-Title: {task.title}
-Description: {task.description}
-Original text: {task.text_span.text if task.text_span else 'N/A'}
-
-Based on the available tools and any previous task results, what tool should be used and with what parameters?
-
-Respond with ONLY a JSON object (no markdown, no explanation):
-{{"can_execute": true/false, "tool_category": "...", "tool_name": "...", "parameters": {{}}, "reasoning": "...", "alternative_approach": "..."}}"""
-
-        try:
-            # Use conversation history if initialized, otherwise fall back to single call
-            if self._system_prompt:
-                response = self._call_claude_with_history(user_message)
-            else:
-                # Fallback for cases where conversation isn't initialized
-                response = self._call_claude_fallback(task)
-            
-            # Clean up response
-            response = response.strip()
-            if response.startswith("```"):
-                lines = response.split("\n")
-                response = "\n".join(lines[1:])
-            if response.endswith("```"):
-                response = response.rsplit("```", 1)[0]
-            response = response.strip()
-            
-            return json.loads(response)
-        except json.JSONDecodeError as e:
-            print(f"Error parsing response as JSON: {e}")
-            print(f"Raw response: {response}")
-            return {
-                "can_execute": False,
-                "reasoning": f"Error parsing AI response: {str(e)}",
-                "alternative_approach": "Manual intervention may be needed"
-            }
-        except Exception as e:
-            print(f"Error planning task execution: {e}")
-            return {
-                "can_execute": False,
-                "reasoning": f"Error during planning: {str(e)}",
-                "alternative_approach": "Manual intervention may be needed"
-            }
+    # ===================
+    # Main Planning Loop
+    # ===================
     
-    def _call_claude_fallback(self, task: Task) -> str:
-        """Fallback method when conversation history isn't available."""
-        tools_context = self._get_tools_context()
-        
-        # Get execution history for context
-        completed_tasks = self.task_manager.get_all_tasks()
-        history_context = ""
-        if completed_tasks:
-            history_parts = []
-            for t in completed_tasks:
-                if t.status == TaskStatus.COMPLETED:
-                    result_preview = (t.result[:200] + "...") if t.result and len(t.result) > 200 else (t.result or 'Completed')
-                    history_parts.append(f"- {t.title}:\n  Result: {result_preview}")
-                elif t.status == TaskStatus.FAILED:
-                    history_parts.append(f"- {t.title}: FAILED - {t.error}")
-            if history_parts:
-                history_context = "PREVIOUSLY EXECUTED TASKS:\n" + "\n".join(history_parts)
-        
-        system_prompt = f"""You are a task execution planner. Select the best tool for the task.
-
-Available tools:
-{tools_context}
-
-{history_context}
-
-Respond with ONLY a JSON object:
-{{"can_execute": true/false, "tool_category": "...", "tool_name": "...", "parameters": {{}}, "reasoning": "...", "alternative_approach": "..."}}"""
-
-        user_message = f"""Plan execution for:
-Title: {task.title}
-Description: {task.description}
-Original text: {task.text_span.text if task.text_span else 'N/A'}"""
-
-        return self._call_claude(system_prompt, user_message)
-    
-    def execute_task(self, task: Task, plan: Dict[str, Any]) -> Dict[str, Any]:
+    def run_turn(self) -> TurnResult:
         """
-        Execute a task based on the execution plan.
+        Execute one turn of the continuous planning loop.
+        
+        1. Check budget
+        2. Summarize history if needed
+        3. Evaluate current state and update plan
+        4. Propose next action
+        
+        Returns TurnResult with proposed action for user approval.
         """
-        if not plan.get("can_execute", False):
-            return {
-                "success": False,
-                "error": plan.get("reasoning", "Cannot execute this task"),
-                "suggestion": plan.get("alternative_approach")
-            }
-        
-        category = plan.get("tool_category")
-        tool_name = plan.get("tool_name")
-        parameters = plan.get("parameters", {})
-        
-        if not category or not tool_name:
-            return {
-                "success": False,
-                "error": "Missing tool category or name in execution plan"
-            }
-        
-        # Update task with tool info
-        self.task_manager.set_task_tool_info(task.id, f"{category}/{tool_name}", parameters)
-        
-        # Execute the tool
-        result = self.tool_client.execute_function(category, tool_name, parameters)
-        
-        return result
-    
-    def review_and_update_tasks(self) -> Dict[str, Any]:
-        """
-        Review current progress and determine if task list needs updates.
-        Called after each task execution.
-        """
-        session = self.task_manager.current_session
+        session = self.current_session
         if not session:
-            return {"updates_needed": False}
+            return TurnResult(status="error", error="No active session")
         
-        completed = [t for t in session.tasks if t.status == TaskStatus.COMPLETED]
-        pending = [t for t in session.tasks if t.status == TaskStatus.PENDING]
-        failed = [t for t in session.tasks if t.status == TaskStatus.FAILED]
+        # Check budget
+        if session.budget.exceeded:
+            self.session_manager.set_session_status(SessionStatus.BUDGET_EXCEEDED)
+            return TurnResult(
+                status="budget_exceeded",
+                session=session,
+                error="Token or turn budget exceeded"
+            )
         
-        # Build context for review
-        completed_summary = "\n".join([
-            f"- {t.title}: {t.result or 'Done'}" for t in completed
-        ]) or "None"
+        # Summarize history if needed
+        if len(session.history) >= self.summarize_after:
+            self._summarize_history()
         
-        pending_summary = "\n".join([
-            f"- {t.title}: {t.description}" for t in pending
-        ]) or "None"
+        # Evaluate and plan
+        evaluation = self._evaluate_and_plan()
         
-        failed_summary = "\n".join([
-            f"- {t.title}: {t.error}" for t in failed
-        ]) or "None"
+        # Check if goal is achieved
+        if evaluation.get("goal_achieved", False):
+            self.session_manager.set_session_status(SessionStatus.COMPLETED)
+            self.session_manager.add_agent_note("Goal achieved!")
+            return TurnResult(
+                status="completed",
+                session=self.current_session,
+                goal_achieved=True,
+                reasoning=evaluation.get("reasoning", "All objectives completed.")
+            )
         
-        system_prompt = """You are a task review assistant. Your job is to review the current progress and determine if the task list needs updates.
+        # Get proposed action
+        action_data = evaluation.get("next_action")
+        if not action_data:
+            # No action proposed - might be stuck or need user input
+            return TurnResult(
+                status="no_action",
+                session=self.current_session,
+                reasoning=evaluation.get("reasoning", "No suitable action available."),
+                error=evaluation.get("blocker")
+            )
+        
+        # Create Action object
+        action = Action(
+            id=generate_id(),
+            plan_step_id=action_data.get("plan_step_id", ""),
+            tool_category=action_data.get("tool_category", ""),
+            tool_name=action_data.get("tool_name", ""),
+            parameters=action_data.get("parameters", {}),
+            reasoning=action_data.get("reasoning", evaluation.get("reasoning", ""))
+        )
+        
+        return TurnResult(
+            status="awaiting_approval",
+            session=self.current_session,
+            proposed_action=action,
+            reasoning=evaluation.get("reasoning", "")
+        )
+    
+    def _evaluate_and_plan(self) -> Dict[str, Any]:
+        """
+        Core evaluation: assess current state, update plan, propose action.
+        """
+        logger.info("Starting evaluation and planning...")
+        
+        session = self.current_session
+        if not session:
+            logger.error("No active session for evaluation")
+            return {"goal_achieved": False, "error": "No session"}
+        
+        logger.info(f"Session: {session.id}, Turn: {session.budget.current_turn}")
+        tools_context = self._get_tools_context()
+        
+        # Format current plan
+        plan_str = self._format_plan(session.plan)
+        
+        # Format history
+        history_str = self._format_history(session.history, session.history_summaries)
+        
+        system_prompt = f"""You are a continuous planning agent. Each turn, you evaluate the situation and decide the next action.
 
-Consider:
-1. Are there any tasks that need to be added based on completed work?
-2. Are there any pending tasks that should be removed or modified?
-3. Should the order of remaining tasks change?
-4. Are there any failed tasks that need a different approach?
+AVAILABLE TOOLS (from tool registry at localhost:9999):
+{tools_context}
 
-Your response must be a valid JSON object:
-{
-  "updates_needed": true/false,
-  "reasoning": "<your analysis>",
-  "new_tasks": [{"title": "...", "description": "...", "insert_after_task_id": "..." or null}],
-  "tasks_to_remove": ["task_id1", ...],
-  "tasks_to_modify": [{"task_id": "...", "new_title": "...", "new_description": "..."}],
-  "agent_note": "<any observations or recommendations for the user>"
-}
+CRITICAL CONSTRAINTS - YOU MUST FOLLOW THESE:
+- You can ONLY use tools listed above from the tool registry
+- DO NOT make up, invent, or hallucinate tools that are not in the list above
+- DO NOT suggest making direct HTTP requests, API calls, or web requests
+- DO NOT suggest using external services, websites, or APIs not in the tool registry
+- If the next step requires a capability not in the available tools, set "next_action" to null and explain in "blockers"
+- Every tool_category and tool_name you propose MUST exist in the AVAILABLE TOOLS list above
+- PARAMETER NAMES MUST MATCH EXACTLY as shown in the tool registry (e.g., if registry shows "data", use "data" NOT "fields")
 
-Only respond with the JSON object, no additional text."""
+YOUR RESPONSIBILITIES:
+1. Evaluate progress toward the goal
+2. Update the plan if needed (add/remove/reorder steps)
+3. Propose ONE specific action using ONLY tools from the registry
+4. If the goal is fully achieved, indicate so
+5. If stuck due to missing tools, explain clearly
 
-        user_message = f"""Please review the current task execution progress:
+IMPORTANT:
+- Never lose sight of the original goal
+- Use results from previous actions to inform decisions
+- If stuck, explain what's blocking progress
+- Use EXACT parameter names as listed in AVAILABLE TOOLS - do not rename or remap parameters
+- ONLY use tools that exist in the registry - verify before proposing"""
 
-ORIGINAL TEXT:
-{session.original_text}
+        user_message = f"""GOAL (your primary objective):
+{session.goal.original_text}
 
-COMPLETED TASKS:
-{completed_summary}
+CURRENT STATE:
+{session.state.summary}
+Completed: {json.dumps(session.state.completed_objectives)}
+Blockers: {json.dumps(session.state.blockers)}
 
-PENDING TASKS:
-{pending_summary}
+CURRENT PLAN:
+{plan_str}
 
-FAILED TASKS:
-{failed_summary}
+EXECUTION HISTORY:
+{history_str}
 
-Should the task list be updated?"""
+---
+
+Evaluate the situation and respond with JSON:
+{{
+    "goal_achieved": true/false,
+    "state_summary": "Updated understanding of the situation...",
+    "completed_objectives": ["objective 1", ...],
+    "blockers": ["any issues..."],
+    "plan_updates": {{
+        "add_steps": [{{"description": "...", "after_step_id": "..." or null}}],
+        "remove_step_ids": ["step_id", ...],
+        "update_steps": [{{"step_id": "...", "new_description": "..."}}]
+    }},
+    "next_action": {{
+        "plan_step_id": "which step this fulfills",
+        "tool_category": "category",
+        "tool_name": "function_name",
+        "parameters": {{...use EXACT parameter names from tool registry...}},
+        "reasoning": "why this action now"
+    }} or null if goal achieved or stuck,
+    "reasoning": "overall analysis..."
+}}
+
+REMINDER: When specifying "parameters", use the EXACT parameter names shown in AVAILABLE TOOLS.
+For example, if a tool shows "Parameters: object_type: str (required), data: dict (required)",
+your parameters should be {{"object_type": "...", "data": {{...}}}} - NOT {{"object_type": "...", "fields": {{...}}}}"""
 
         try:
-            response = self._call_claude(system_prompt, user_message)
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1]
-            if response.endswith("```"):
-                response = response.rsplit("```", 1)[0]
-            response = response.strip()
+            response, tokens = self._call_claude(system_prompt, user_message)
+            self.session_manager.add_tokens_used(tokens)
+            logger.info("Evaluation response received")
             
-            review_result = json.loads(response)
+            data = self._parse_json_response(response)
+            logger.info(f"Goal achieved: {data.get('goal_achieved', False)}")
+            next_action = data.get('next_action') or {}  # Handle explicit null
+            logger.debug(f"Next action: {next_action.get('tool_name', 'None')}")
             
-            # Apply updates if needed
-            if review_result.get("updates_needed"):
-                self._apply_task_updates(review_result)
+            # Update state
+            new_state = AgentState(
+                summary=data.get("state_summary", session.state.summary),
+                completed_objectives=data.get("completed_objectives", session.state.completed_objectives),
+                blockers=data.get("blockers", []),
+                context=session.state.context
+            )
+            self.session_manager.update_state(new_state)
             
-            # Add agent note
-            if review_result.get("agent_note"):
-                self.task_manager.add_agent_note(review_result["agent_note"])
+            # Apply plan updates
+            self._apply_plan_updates(data.get("plan_updates", {}))
             
-            return review_result
+            return data
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing evaluation response: {e}")
+            logger.debug(f"Raw response: {response[:500] if 'response' in dir() else 'N/A'}...")
+            return {
+                "goal_achieved": False,
+                "error": f"Failed to parse AI response: {e}",
+                "reasoning": "Error in AI response parsing"
+            }
         except Exception as e:
-            print(f"Error during task review: {e}")
-            return {"updates_needed": False, "error": str(e)}
+            logger.error(f"Error in evaluation: {e}", exc_info=True)
+            return {
+                "goal_achieved": False,
+                "error": str(e),
+                "reasoning": f"Error during evaluation: {e}"
+            }
     
-    def _apply_task_updates(self, review_result: Dict[str, Any]) -> None:
-        """Apply the updates from task review."""
-        # Remove tasks
-        for task_id in review_result.get("tasks_to_remove", []):
-            self.task_manager.remove_task(task_id)
+    def _apply_plan_updates(self, updates: Dict[str, Any]) -> None:
+        """Apply plan updates from evaluation."""
+        if not updates:
+            return
         
-        # Modify tasks
-        for mod in review_result.get("tasks_to_modify", []):
-            updates = {}
-            if mod.get("new_title"):
-                updates["title"] = mod["new_title"]
-            if mod.get("new_description"):
-                updates["description"] = mod["new_description"]
-            if updates:
-                self.task_manager.update_task(mod["task_id"], **updates)
+        # Remove steps
+        for step_id in updates.get("remove_step_ids", []):
+            self.session_manager.remove_plan_step(step_id)
         
-        # Add new tasks
-        for new_task in review_result.get("new_tasks", []):
-            if new_task.get("insert_after_task_id"):
-                self.task_manager.insert_task_after(
-                    new_task["insert_after_task_id"],
-                    new_task["title"],
-                    new_task["description"]
+        # Update steps
+        for update in updates.get("update_steps", []):
+            step_id = update.get("step_id")
+            if step_id:
+                for step in self.current_session.plan.steps:
+                    if step.id == step_id:
+                        step.description = update.get("new_description", step.description)
+                        break
+        
+        # Add steps
+        for new_step in updates.get("add_steps", []):
+            self.session_manager.add_plan_step(
+                description=new_step.get("description", ""),
+                after_step_id=new_step.get("after_step_id")
+            )
+        
+        self.session_manager.save_session()
+    
+    def _format_plan(self, plan: Plan) -> str:
+        """Format plan for prompt."""
+        if not plan.steps:
+            return "No plan yet."
+        
+        lines = []
+        for i, step in enumerate(plan.steps):
+            status_icon = {
+                StepStatus.PLANNED: "⬜",
+                StepStatus.IN_PROGRESS: "🔄",
+                StepStatus.COMPLETED: "✅",
+                StepStatus.FAILED: "❌",
+                StepStatus.SKIPPED: "⏭️"
+            }.get(step.status, "⬜")
+            
+            line = f"{i+1}. [{step.id}] {status_icon} {step.description}"
+            if step.result:
+                line += f"\n   Result: {step.result[:100]}..."
+            if step.error:
+                line += f"\n   Error: {step.error}"
+            lines.append(line)
+        
+        return "\n".join(lines)
+    
+    def _format_history(
+        self,
+        history: List[HistoryEntry],
+        summaries: List[HistorySummary]
+    ) -> str:
+        """Format execution history for prompt."""
+        parts = []
+        
+        # Include summaries of older history
+        for summary in summaries:
+            parts.append(f"[Summary of turns 1-{summary.turns_covered}]")
+            parts.append(summary.summary_text)
+            parts.append("")
+        
+        # Include recent history
+        for entry in history[-5:]:  # Last 5 entries
+            parts.append(f"Turn {entry.turn}: {entry.action.tool_category}/{entry.action.tool_name}")
+            parts.append(f"  Params: {json.dumps(entry.action.parameters)}")
+            if entry.result.get("success"):
+                result_str = json.dumps(entry.result.get("result", {}))
+                if len(result_str) > 200:
+                    result_str = result_str[:200] + "..."
+                parts.append(f"  Result: {result_str}")
+            else:
+                parts.append(f"  Error: {entry.result.get('error', 'Unknown')}")
+            parts.append("")
+        
+        return "\n".join(parts) if parts else "No history yet."
+    
+    # ===================
+    # Action Execution
+    # ===================
+    
+    def execute_action(self, action: Action) -> ExecutionResult:
+        """
+        Execute an approved action and update session state.
+        Validates that the tool exists in the registry before execution.
+        """
+        session = self.current_session
+        if not session:
+            return ExecutionResult(success=False, error="No active session")
+        
+        # IMPORTANT: Validate that the tool exists in the registry
+        is_valid, error_msg = self._validate_tool(action.tool_category, action.tool_name)
+        if not is_valid:
+            logger.error(f"Tool validation failed: {error_msg}")
+            # Update step status to failed
+            if action.plan_step_id:
+                self.session_manager.update_step_status(
+                    action.plan_step_id,
+                    StepStatus.FAILED,
+                    error=f"Invalid tool: {error_msg}"
+                )
+            return ExecutionResult(
+                success=False, 
+                error=f"Tool validation failed: {error_msg}. Only tools from the registry can be used."
+            )
+        
+        logger.info(f"Executing validated tool: {action.tool_category}/{action.tool_name}")
+        
+        # Mark the corresponding plan step as in progress
+        if action.plan_step_id:
+            self.session_manager.update_step_status(
+                action.plan_step_id,
+                StepStatus.IN_PROGRESS,
+                tool_used=f"{action.tool_category}/{action.tool_name}",
+                tool_params=action.parameters
+            )
+        
+        # Execute the tool (only reaches here if validation passed)
+        result = self.tool_client.execute_function(
+            action.tool_category,
+            action.tool_name,
+            action.parameters
+        )
+        
+        # Update plan step status based on result
+        if action.plan_step_id:
+            if result.get("success"):
+                result_str = json.dumps(result.get("result", {}))
+                self.session_manager.update_step_status(
+                    action.plan_step_id,
+                    StepStatus.COMPLETED,
+                    result=result_str
                 )
             else:
-                self.task_manager.add_task(
-                    new_task["title"],
-                    new_task["description"]
+                self.session_manager.update_step_status(
+                    action.plan_step_id,
+                    StepStatus.FAILED,
+                    error=result.get("error", "Unknown error")
                 )
+        
+        # Add to history
+        self.session_manager.add_history_entry(action, result)
+        
+        # Increment turn counter
+        self.session_manager.increment_turn()
+        
+        # Estimate tokens for the result (rough estimate)
+        result_tokens = len(json.dumps(result)) // 4
+        self.session_manager.add_tokens_used(result_tokens)
+        
+        return ExecutionResult(
+            success=result.get("success", False),
+            data=result,
+            error=result.get("error"),
+            tokens_used=result_tokens
+        )
     
-    def get_task_explanation(self, task: Task, plan: Dict[str, Any]) -> str:
-        """
-        Generate a human-readable explanation of what will be done for a task.
-        Used for the confirmation step.
-        """
-        if not plan.get("can_execute"):
-            return f"""⚠️ **Cannot Execute Automatically**
-
-**Task:** {task.title}
-
-**Reason:** {plan.get('reasoning', 'No suitable tool available')}
-
-**Suggestion:** {plan.get('alternative_approach', 'Manual intervention may be needed')}"""
+    def skip_action(self, action: Action) -> None:
+        """Mark the action's plan step as skipped."""
+        if action.plan_step_id:
+            self.session_manager.update_step_status(
+                action.plan_step_id,
+                StepStatus.SKIPPED
+            )
+        self.session_manager.add_agent_note(f"Action skipped: {action.tool_name}")
+        self.session_manager.increment_turn()
+    
+    # ===================
+    # History Summarization
+    # ===================
+    
+    def _summarize_history(self) -> None:
+        """Summarize old history to manage context length."""
+        session = self.current_session
+        if not session or len(session.history) < self.summarize_after:
+            return
         
-        tool_name = plan.get("tool_name", "Unknown")
-        category = plan.get("tool_category", "Unknown")
-        params = plan.get("parameters", {})
-        reasoning = plan.get("reasoning", "")
+        # Get entries to summarize (all but the last few)
+        entries_to_summarize = session.history[:-3]
+        if not entries_to_summarize:
+            return
         
-        params_str = "\n".join([f"  - {k}: {v}" for k, v in params.items()]) if params else "  None"
+        # Format for summarization
+        history_text = []
+        for entry in entries_to_summarize:
+            history_text.append(
+                f"Turn {entry.turn}: {entry.action.tool_name} -> "
+                f"{'Success' if entry.result.get('success') else 'Failed'}"
+            )
         
-        return f"""🔧 **Ready to Execute**
+        system_prompt = """You are a summarization assistant. Summarize the execution history concisely.
+Focus on:
+1. What actions were taken
+2. Key results and outcomes
+3. Any failures or issues encountered
 
-**Task:** {task.title}
+Keep it brief but capture essential information for continuing the task."""
 
-**Tool:** {category}/{tool_name}
+        user_message = f"""Summarize this execution history:
+
+{chr(10).join(history_text)}
+
+Respond with JSON:
+{{
+    "summary": "Concise summary...",
+    "key_results": ["result 1", "result 2", ...]
+}}"""
+
+        try:
+            response, tokens = self._call_claude(system_prompt, user_message, temperature=0.2)
+            self.session_manager.add_tokens_used(tokens)
+            
+            data = self._parse_json_response(response)
+            
+            summary = HistorySummary(
+                summary_text=data.get("summary", "Previous actions completed."),
+                turns_covered=len(entries_to_summarize),
+                key_results=data.get("key_results", []),
+                created_at=datetime.now()
+            )
+            
+            self.session_manager.add_history_summary(summary)
+            self.session_manager.clear_old_history(keep_recent=3)
+            
+        except Exception as e:
+            print(f"Error summarizing history: {e}")
+    
+    # ===================
+    # Utility Methods
+    # ===================
+    
+    def get_action_explanation(self, action: Action) -> str:
+        """Generate a human-readable explanation of the proposed action."""
+        if not action:
+            return "No action proposed."
+        
+        params_str = "\n".join([
+            f"  - {k}: {v}" for k, v in action.parameters.items()
+        ]) if action.parameters else "  None"
+        
+        return f"""🔧 **Proposed Action**
+
+**Tool:** {action.tool_category}/{action.tool_name}
 
 **Parameters:**
 {params_str}
 
-**Reasoning:** {reasoning}"""
+**Reasoning:** {action.reasoning}"""
     
-    def initialize_session(self, text: str) -> Tuple[TaskSession, List[Task]]:
-        """
-        Initialize a new session from user text.
-        Parses the text and creates tasks.
-        Sets up conversation context for maintaining state across executions.
-        """
-        # Create session
-        session = self.task_manager.create_session(text)
-        
-        # Parse tasks from text
-        parsed_tasks = self.parse_tasks_from_text(text)
-        
-        # Add tasks to session
-        tasks = self.task_manager.add_tasks_batch(parsed_tasks)
-        
-        # Initialize conversation context for task execution
-        # This allows the agent to remember previous task results
-        self._init_conversation(text, tasks)
-        
-        self.task_manager.add_agent_note(
-            f"Session initialized with {len(tasks)} tasks extracted from user input."
-        )
-        
-        return session, tasks
+    def abort_session(self) -> None:
+        """Abort the current session."""
+        self.session_manager.abort_session()
+        self.session_manager.add_agent_note("Session aborted by user.")
     
-    def process_next_task(self) -> Optional[Dict[str, Any]]:
-        """
-        Get the next task and prepare it for execution.
-        Returns task info and execution plan for user confirmation.
-        """
-        task = self.task_manager.get_next_task()
-        if not task:
-            return None
-        
-        # Update status to in progress
-        self.task_manager.update_task_status(task.id, TaskStatus.AWAITING_CONFIRMATION)
-        
-        # Plan execution
-        plan = self.plan_task_execution(task)
-        
-        # Generate explanation
-        explanation = self.get_task_explanation(task, plan)
-        
-        return {
-            "task": task,
-            "plan": plan,
-            "explanation": explanation
-        }
-    
-    def confirm_and_execute(self, task_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute a task after user confirmation.
-        Results are added to conversation history for context in subsequent tasks.
-        """
-        task = self.task_manager.get_task_by_id(task_id)
-        if not task:
-            return {"success": False, "error": "Task not found"}
-        
-        # Update status
-        self.task_manager.update_task_status(task.id, TaskStatus.IN_PROGRESS)
-        
-        # Execute
-        result = self.execute_task(task, plan)
-        
-        # Update status based on result
-        if result.get("success"):
-            result_str = json.dumps(result.get("result", {}), indent=2)
-            self.task_manager.update_task_status(
-                task.id, 
-                TaskStatus.COMPLETED,
-                result=result_str
-            )
-        else:
-            self.task_manager.update_task_status(
-                task.id,
-                TaskStatus.FAILED,
-                error=result.get("error", "Unknown error")
-            )
-        
-        # Add execution result to conversation history
-        # This allows subsequent tasks to reference this result
-        self._add_execution_result_to_history(task, result)
-        
-        # Review and potentially update task list
-        review = self.review_and_update_tasks()
-        
-        return {
-            "execution_result": result,
-            "review": review
-        }
-    
-    def skip_task(self, task_id: str) -> bool:
-        """Mark a task as skipped."""
-        task = self.task_manager.update_task_status(task_id, TaskStatus.SKIPPED)
-        if task:
-            self.task_manager.add_agent_note(f"Task '{task.title}' was skipped by user.")
-            # Add skip info to conversation history
-            if self._system_prompt:
-                self._conversation_history.append({
-                    "role": "user",
-                    "content": f"TASK SKIPPED: {task.title} - User chose to skip this task."
-                })
-                self._conversation_history.append({
-                    "role": "assistant", 
-                    "content": f"Noted. Task '{task.title}' was skipped. Moving to the next task."
-                })
-            return True
-        return False
-    
-    def restore_session_context(self) -> None:
-        """
-        Restore conversation context when loading an existing session.
-        Rebuilds context from completed tasks.
-        """
-        session = self.task_manager.current_session
-        if not session:
-            return
-        
-        tasks = self.task_manager.get_all_tasks()
-        
-        # Initialize with current tasks
-        self._init_conversation(session.original_text, tasks)
-        
-        # Replay completed task results into conversation history
-        for task in tasks:
-            if task.status == TaskStatus.COMPLETED and task.result:
-                self._conversation_history.append({
-                    "role": "user",
-                    "content": f"TASK COMPLETED: {task.title}\nResult: {task.result}"
-                })
-                self._conversation_history.append({
-                    "role": "assistant",
-                    "content": f"Understood. Task '{task.title}' was previously completed."
-                })
-            elif task.status == TaskStatus.FAILED and task.error:
-                self._conversation_history.append({
-                    "role": "user",
-                    "content": f"TASK FAILED: {task.title}\nError: {task.error}"
-                })
-                self._conversation_history.append({
-                    "role": "assistant",
-                    "content": f"Noted. Task '{task.title}' previously failed."
-                })
-            elif task.status == TaskStatus.SKIPPED:
-                self._conversation_history.append({
-                    "role": "user",
-                    "content": f"TASK SKIPPED: {task.title}"
-                })
-                self._conversation_history.append({
-                    "role": "assistant",
-                    "content": f"Noted. Task '{task.title}' was skipped."
-                })
+    def load_session(self, session_id: str) -> Optional[Session]:
+        """Load an existing session."""
+        return self.session_manager.load_session(session_id)
 
 
 def create_agent(
     storage_dir: str = "./task_data",
     tool_api_url: str = "http://localhost:9999"
-) -> TaskAgent:
+) -> ContinuousPlanningAgent:
     """Factory function to create a fully configured agent."""
-    task_manager = TaskManager(storage_dir)
+    session_manager = SessionManager(storage_dir)
     tool_client = ToolRegistryClient(tool_api_url)
-    return TaskAgent(task_manager, tool_client)
+    return ContinuousPlanningAgent(session_manager, tool_client)
 
+
+# Backwards compatibility
+TaskAgent = ContinuousPlanningAgent
