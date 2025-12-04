@@ -744,18 +744,17 @@ def main():
                 
                 # Progress bar
                 progress_pct = ((completed + skipped) / total * 100) if total > 0 else 0
-                st.markdown(f"""
-                <div style="margin-bottom: 1rem;">
-                    <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #64748b; margin-bottom: 0.25rem;">
-                        <span>✅ {completed} completed</span>
-                        <span>⬜ {progress["planned"]} remaining</span>
-                        {f'<span style="color: #dc2626;">❌ {failed} failed</span>' if failed > 0 else ''}
-                    </div>
-                    <div style="height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
-                        <div style="height: 100%; width: {progress_pct}%; background: linear-gradient(90deg, #10b981 0%, #059669 100%); border-radius: 3px;"></div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                failed_span = f'<span style="color: #dc2626;">❌ {failed} failed</span>' if failed > 0 else ''
+                st.markdown(f"""<div style="margin-bottom: 1rem;">
+<div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #64748b; margin-bottom: 0.25rem;">
+<span>✅ {completed} completed</span>
+<span>⬜ {progress["planned"]} remaining</span>
+{failed_span}
+</div>
+<div style="height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
+<div style="height: 100%; width: {progress_pct}%; background: linear-gradient(90deg, #10b981 0%, #059669 100%); border-radius: 3px;"></div>
+</div>
+</div>""", unsafe_allow_html=True)
                 
                 # Find current step index for "NEXT" indicator
                 current_idx = None
