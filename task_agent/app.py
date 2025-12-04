@@ -642,25 +642,25 @@ def main():
         # No active session - show input
         st.markdown("### 🎯 Enter Your Goal")
         
-            input_text = st.text_area(
+        input_text = st.text_area(
             "What do you want to accomplish?",
-                value=st.session_state.input_text,
+            value=st.session_state.input_text,
             height=150,
             placeholder="Describe your goal...\n\nExample:\nI need to search for weather in San Francisco, calculate the wind chill factor, and summarize the results."
-            )
-            
+        )
+        
         if st.button("🚀 Start Planning", type="primary", use_container_width=True):
-                if input_text.strip():
+            if input_text.strip():
                 with st.spinner("Analyzing goal and creating initial plan..."):
                     session = agent.start_session(
                         goal_text=input_text,
                         max_tokens=max_tokens,
                         max_turns=max_turns
                     )
-                        st.session_state.current_session = session
-                        st.session_state.input_text = input_text
-                    st.rerun()
-                else:
+                    st.session_state.current_session = session
+                    st.session_state.input_text = input_text
+                st.rerun()
+            else:
                 st.warning("Please enter a goal first.")
     
     else:
@@ -857,10 +857,10 @@ def main():
                                 else:
                                     st.toast(f"Action failed: {result.error}", icon="❌")
                                 
-                        st.rerun()
-                
-                with col_skip:
-                    if st.button("⏭️ Skip", use_container_width=True):
+                                st.rerun()
+                        
+                        with col_skip:
+                            if st.button("⏭️ Skip", use_container_width=True):
                                 agent.skip_action(action)
                                 st.session_state.turn_result = None
                                 st.session_state.current_session = agent.current_session
