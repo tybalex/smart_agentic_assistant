@@ -256,6 +256,84 @@ class Action:
 
 
 @dataclass
+class ClarificationQuestion:
+    """A question the agent asks the user for clarification."""
+    id: str
+    question: str  # The question text
+    context: str  # Why the agent is asking
+    options: List[str] = field(default_factory=list)  # Optional: suggested answers
+    related_step_id: Optional[str] = None  # Which plan step this relates to
+    created_at: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "question": self.question,
+            "context": self.context,
+            "options": self.options,
+            "related_step_id": self.related_step_id,
+            "created_at": self.created_at.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ClarificationQuestion":
+        return cls(
+            id=data["id"],
+            question=data["question"],
+            context=data.get("context", ""),
+            options=data.get("options", []),
+            related_step_id=data.get("related_step_id"),
+            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now()
+        )
+
+
+@dataclass
+class ClarificationAnswer:
+    """User's answer to a clarification question."""
+    question_id: str
+    answer: str
+    answered_at: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "question_id": self.question_id,
+            "answer": self.answer,
+            "answered_at": self.answered_at.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ClarificationAnswer":
+        return cls(
+            question_id=data["question_id"],
+            answer=data["answer"],
+            answered_at=datetime.fromisoformat(data["answered_at"]) if data.get("answered_at") else datetime.now()
+        )
+
+
+@dataclass
+class ClarificationEntry:
+    """A Q&A pair in the session history."""
+    turn: int
+    question: ClarificationQuestion
+    answer: ClarificationAnswer
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "turn": self.turn,
+            "question": self.question.to_dict(),
+            "answer": self.answer.to_dict()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ClarificationEntry":
+        return cls(
+            turn=data["turn"],
+            question=ClarificationQuestion.from_dict(data["question"]),
+            answer=ClarificationAnswer.from_dict(data["answer"])
+        )
+
+
+@dataclass
 class HistoryEntry:
     """A single entry in the execution history."""
     turn: int
@@ -362,6 +440,7 @@ class Session:
     plan: Plan = field(default_factory=Plan)
     history: List[HistoryEntry] = field(default_factory=list)
     history_summaries: List[HistorySummary] = field(default_factory=list)  # Compressed old history
+    clarifications: List[ClarificationEntry] = field(default_factory=list)  # Q&A history
     budget: TokenBudget = field(default_factory=TokenBudget)
     status: SessionStatus = SessionStatus.ACTIVE
     agent_notes: List[str] = field(default_factory=list)  # Agent observations
@@ -388,6 +467,7 @@ class Session:
             "plan": self.plan.to_dict(),
             "history": [h.to_dict() for h in self.history],
             "history_summaries": [hs.to_dict() for hs in self.history_summaries],
+            "clarifications": [c.to_dict() for c in self.clarifications],
             "budget": self.budget.to_dict(),
             "status": self.status.value,
             "agent_notes": self.agent_notes,
@@ -404,6 +484,7 @@ class Session:
             plan=Plan.from_dict(data.get("plan", {})),
             history=[HistoryEntry.from_dict(h) for h in data.get("history", [])],
             history_summaries=[HistorySummary.from_dict(hs) for hs in data.get("history_summaries", [])],
+            clarifications=[ClarificationEntry.from_dict(c) for c in data.get("clarifications", [])],
             budget=TokenBudget.from_dict(data.get("budget", {})),
             status=SessionStatus(data.get("status", "active")),
             agent_notes=data.get("agent_notes", []),
@@ -415,9 +496,11 @@ class Session:
 @dataclass
 class TurnResult:
     """Result of a single turn in the planning loop."""
-    status: str  # "awaiting_approval", "completed", "budget_exceeded", "aborted"
+    # Status options: "awaiting_approval", "needs_clarification", "completed", "budget_exceeded", "aborted", "no_action"
+    status: str
     session: Optional[Session] = None
     proposed_action: Optional[Action] = None
+    clarification_question: Optional[ClarificationQuestion] = None  # NEW: question for user
     reasoning: str = ""
     goal_achieved: bool = False
     error: Optional[str] = None
@@ -427,6 +510,7 @@ class TurnResult:
             "status": self.status,
             "session": self.session.to_dict() if self.session else None,
             "proposed_action": self.proposed_action.to_dict() if self.proposed_action else None,
+            "clarification_question": self.clarification_question.to_dict() if self.clarification_question else None,
             "reasoning": self.reasoning,
             "goal_achieved": self.goal_achieved,
             "error": self.error

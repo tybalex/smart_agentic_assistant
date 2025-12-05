@@ -12,7 +12,8 @@ from pathlib import Path
 from models import (
     Session, Goal, AgentState, Plan, PlanStep, Action,
     HistoryEntry, HistorySummary, TokenBudget,
-    SessionStatus, StepStatus, TextSpan, generate_id
+    SessionStatus, StepStatus, TextSpan, generate_id,
+    ClarificationQuestion, ClarificationAnswer, ClarificationEntry
 )
 
 
@@ -397,6 +398,41 @@ class SessionManager:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.current_session.agent_notes.append(f"[{timestamp}] {note}")
             self.save_session()
+    
+    # ===================
+    # Clarification Management
+    # ===================
+    
+    def add_clarification(
+        self,
+        question: ClarificationQuestion,
+        answer: ClarificationAnswer
+    ) -> ClarificationEntry:
+        """Add a clarification Q&A pair to the session."""
+        if not self.current_session:
+            raise ValueError("No active session")
+        
+        entry = ClarificationEntry(
+            turn=self.current_session.budget.current_turn,
+            question=question,
+            answer=answer
+        )
+        
+        self.current_session.clarifications.append(entry)
+        self.save_session()
+        return entry
+    
+    def get_recent_clarifications(self, n: int = 5) -> List[ClarificationEntry]:
+        """Get the N most recent clarification entries."""
+        if not self.current_session:
+            return []
+        return self.current_session.clarifications[-n:]
+    
+    def get_all_clarifications(self) -> List[ClarificationEntry]:
+        """Get all clarification entries."""
+        if not self.current_session:
+            return []
+        return self.current_session.clarifications
     
     # ===================
     # Convenience Getters

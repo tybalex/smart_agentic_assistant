@@ -13,7 +13,8 @@ from anthropic import Anthropic
 from models import (
     Session, Goal, AgentState, Plan, PlanStep, Action,
     HistoryEntry, HistorySummary, TokenBudget, TurnResult, ExecutionResult,
-    SessionStatus, StepStatus, TextSpan, generate_id
+    SessionStatus, StepStatus, TextSpan, generate_id,
+    ClarificationQuestion, ClarificationAnswer, ClarificationEntry
 )
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
@@ -311,6 +312,27 @@ Remember to identify exact text spans for each step."""
                 reasoning=evaluation.get("reasoning", "All objectives completed.")
             )
         
+        # Check for clarification question first
+        clarification_data = evaluation.get("clarification_question")
+        if clarification_data and isinstance(clarification_data, dict) and clarification_data.get("question"):
+            # Agent wants to ask a question
+            question = ClarificationQuestion(
+                id=generate_id(),
+                question=clarification_data.get("question", ""),
+                context=clarification_data.get("context", ""),
+                options=clarification_data.get("options", []),
+                related_step_id=clarification_data.get("related_step_id")
+            )
+            
+            logger.info(f"Agent asking clarification: {question.question[:50]}...")
+            
+            return TurnResult(
+                status="needs_clarification",
+                session=self.current_session,
+                clarification_question=question,
+                reasoning=evaluation.get("reasoning", "Need more information to proceed.")
+            )
+        
         # Get proposed action
         action_data = evaluation.get("next_action")
         if not action_data:
@@ -359,7 +381,10 @@ Remember to identify exact text spans for each step."""
         # Format history
         history_str = self._format_history(session.history, session.history_summaries)
         
-        system_prompt = f"""You are a continuous planning agent. Each turn, you evaluate the situation and decide the next action.
+        # Include clarifications in context
+        clarifications_str = self._format_clarifications(session.clarifications)
+        
+        system_prompt = f"""You are a continuous planning agent. Each turn, you evaluate the situation and decide the next action OR ask the user a clarification question.
 
 AVAILABLE TOOLS (from tool registry at localhost:9999):
 {tools_context}
@@ -376,7 +401,13 @@ CRITICAL CONSTRAINTS - YOU MUST FOLLOW THESE:
 YOUR RESPONSIBILITIES:
 1. Evaluate progress toward the goal
 2. Update the plan if needed (add/remove/reorder steps)
-3. Propose ONE specific action using ONLY tools from the registry
+3. DECIDE: Either propose ONE action OR ask a clarification question
+   - Propose an ACTION if you have enough information to proceed confidently
+   - Ask a CLARIFICATION QUESTION if:
+     * Information is ambiguous or incomplete
+     * Multiple valid interpretations exist
+     * Making an assumption could lead to wrong results
+     * User preferences are needed for a decision
 4. If the goal is fully achieved, indicate so
 5. If stuck due to missing tools, explain clearly
 
@@ -385,7 +416,8 @@ IMPORTANT:
 - Use results from previous actions to inform decisions
 - If stuck, explain what's blocking progress
 - Use EXACT parameter names as listed in AVAILABLE TOOLS - do not rename or remap parameters
-- ONLY use tools that exist in the registry - verify before proposing"""
+- ONLY use tools that exist in the registry - verify before proposing
+- WHEN UNCERTAIN, ASK - don't make assumptions that could waste time or cause errors"""
 
         user_message = f"""GOAL (your primary objective):
 {session.goal.original_text}
@@ -401,6 +433,9 @@ CURRENT PLAN:
 EXECUTION HISTORY:
 {history_str}
 
+PREVIOUS CLARIFICATIONS (user answered questions):
+{clarifications_str}
+
 ---
 
 Evaluate the situation and respond with JSON:
@@ -414,19 +449,32 @@ Evaluate the situation and respond with JSON:
         "remove_step_ids": ["step_id", ...],
         "update_steps": [{{"step_id": "...", "new_description": "..."}}]
     }},
+    
+    // CHOOSE ONE: Either "next_action" OR "clarification_question", NOT BOTH
+    
     "next_action": {{
         "plan_step_id": "which step this fulfills",
         "tool_category": "category",
         "tool_name": "function_name",
         "parameters": {{...use EXACT parameter names from tool registry...}},
         "reasoning": "why this action now"
-    }} or null if goal achieved or stuck,
+    }} or null if asking question or goal achieved or stuck,
+    
+    "clarification_question": {{
+        "question": "What specific information do you need?",
+        "context": "Why you need this information",
+        "options": ["Option A", "Option B"] or [],
+        "related_step_id": "step_id this relates to" or null
+    }} or null if taking action,
+    
     "reasoning": "overall analysis..."
 }}
 
-REMINDER: When specifying "parameters", use the EXACT parameter names shown in AVAILABLE TOOLS.
-For example, if a tool shows "Parameters: object_type: str (required), data: dict (required)",
-your parameters should be {{"object_type": "...", "data": {{...}}}} - NOT {{"object_type": "...", "fields": {{...}}}}"""
+REMINDER: 
+- When specifying "parameters", use the EXACT parameter names shown in AVAILABLE TOOLS.
+- If you need clarification from the user, set "next_action" to null and provide "clarification_question".
+- If you have enough info to proceed, set "clarification_question" to null and provide "next_action".
+- Don't ask unnecessary questions - only ask when genuinely uncertain about something important."""
 
         try:
             response, tokens = self._call_claude(system_prompt, user_message)
@@ -548,6 +596,21 @@ your parameters should be {{"object_type": "...", "data": {{...}}}} - NOT {{"obj
         
         return "\n".join(parts) if parts else "No history yet."
     
+    def _format_clarifications(self, clarifications: List[ClarificationEntry]) -> str:
+        """Format clarification Q&A history for prompt."""
+        if not clarifications:
+            return "No previous clarifications."
+        
+        parts = []
+        for entry in clarifications[-5:]:  # Last 5 Q&As
+            parts.append(f"Q (Turn {entry.turn}): {entry.question.question}")
+            if entry.question.options:
+                parts.append(f"  Options given: {entry.question.options}")
+            parts.append(f"A: {entry.answer.answer}")
+            parts.append("")
+        
+        return "\n".join(parts)
+    
     # ===================
     # Action Execution
     # ===================
@@ -636,6 +699,42 @@ your parameters should be {{"object_type": "...", "data": {{...}}}} - NOT {{"obj
                 StepStatus.SKIPPED
             )
         self.session_manager.add_agent_note(f"Action skipped: {action.tool_name}")
+        self.session_manager.increment_turn()
+    
+    # ===================
+    # Clarification Handling
+    # ===================
+    
+    def provide_clarification(
+        self,
+        question: ClarificationQuestion,
+        answer: str
+    ) -> None:
+        """
+        Process user's answer to a clarification question.
+        Stores the Q&A in session history for future reference.
+        """
+        session = self.current_session
+        if not session:
+            logger.error("No active session for clarification")
+            return
+        
+        # Create answer object
+        clarification_answer = ClarificationAnswer(
+            question_id=question.id,
+            answer=answer
+        )
+        
+        # Store in session
+        self.session_manager.add_clarification(question, clarification_answer)
+        
+        # Log it
+        logger.info(f"Clarification received - Q: {question.question[:50]}... A: {answer[:50]}...")
+        self.session_manager.add_agent_note(
+            f"User clarification: '{question.question[:30]}...' -> '{answer[:50]}...'"
+        )
+        
+        # Increment turn for the clarification exchange
         self.session_manager.increment_turn()
     
     # ===================

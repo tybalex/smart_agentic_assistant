@@ -8,7 +8,8 @@ import json
 from typing import Optional, Dict, Any, List
 
 from models import (
-    Session, StepStatus, PlanStep, Action, SessionStatus, Plan
+    Session, StepStatus, PlanStep, Action, SessionStatus, Plan,
+    ClarificationQuestion, ClarificationAnswer
 )
 from agent import ContinuousPlanningAgent, create_agent
 from session_manager import SessionManager
@@ -216,6 +217,58 @@ st.markdown("""
         color: #713f12;
         font-size: 0.9rem;
         font-style: italic;
+    }
+    
+    /* Clarification card */
+    .clarification-card {
+        background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%);
+        border: 2px solid #8b5cf6;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+    }
+    
+    .clarification-label {
+        color: #5b21b6;
+        font-size: 0.875rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.75rem;
+    }
+    
+    .clarification-question {
+        font-size: 1.1rem;
+        color: #1f2937;
+        background: #ffffff;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 0.75rem;
+        border-left: 3px solid #8b5cf6;
+    }
+    
+    .clarification-context {
+        color: #6b21a8;
+        font-size: 0.9rem;
+        font-style: italic;
+        margin-bottom: 0.75rem;
+    }
+    
+    .clarification-options {
+        background: #f5f3ff;
+        padding: 0.75rem;
+        border-radius: 6px;
+        margin-bottom: 0.5rem;
+    }
+    
+    .clarification-option {
+        display: inline-block;
+        background: #8b5cf6;
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 15px;
+        font-size: 0.85rem;
+        margin: 0.25rem;
     }
     
     /* Budget indicator */
@@ -555,6 +608,39 @@ def render_action_card(action: Action) -> str:
     """
 
 
+def render_clarification_card(question: ClarificationQuestion) -> str:
+    """Render the clarification question card."""
+    options_html = ""
+    if question.options:
+        options_items = "".join([
+            f'<span class="clarification-option">{opt}</span>' for opt in question.options
+        ])
+        options_html = f'''
+        <div class="clarification-options">
+            <strong>Suggested options:</strong><br>{options_items}
+        </div>
+        '''
+    
+    context_html = ""
+    if question.context:
+        context_html = f'''
+        <div class="clarification-context">
+            <strong>Why I'm asking:</strong> {question.context}
+        </div>
+        '''
+    
+    return f"""
+    <div class="clarification-card">
+        <div class="clarification-label">❓ Clarification Needed</div>
+        <div class="clarification-question">
+            {question.question}
+        </div>
+        {context_html}
+        {options_html}
+    </div>
+    """
+
+
 def main():
     """Main application entry point."""
     init_session_state()
@@ -872,6 +958,70 @@ def main():
                                 st.session_state.current_session = agent.current_session
                                 st.rerun()
                     
+                    elif turn_result.status == "needs_clarification":
+                        question = turn_result.clarification_question
+                        
+                        # Show agent's reasoning
+                        if turn_result.reasoning:
+                            st.markdown(f"""
+                            <div class="state-card" style="border-left: 4px solid #8b5cf6;">
+                                <div class="state-label">🧠 Agent's Analysis (Turn {session.budget.current_turn})</div>
+                                <div class="state-content">{turn_result.reasoning}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        # Show clarification card
+                        st.markdown(render_clarification_card(question), unsafe_allow_html=True)
+                        
+                        # Answer input
+                        if question.options:
+                            # If options provided, show as radio buttons
+                            answer = st.radio(
+                                "Select your answer:",
+                                options=question.options + ["Other (type below)"],
+                                key="clarification_radio"
+                            )
+                            if answer == "Other (type below)":
+                                answer = st.text_input(
+                                    "Your answer:",
+                                    key="clarification_text_other",
+                                    placeholder="Type your answer..."
+                                )
+                        else:
+                            # Free text input
+                            answer = st.text_area(
+                                "Your answer:",
+                                key="clarification_text",
+                                placeholder="Type your answer...",
+                                height=100
+                            )
+                        
+                        col_submit, col_skip_q, col_abort_q = st.columns(3)
+                        
+                        with col_submit:
+                            if st.button("📤 Submit Answer", type="primary", use_container_width=True, disabled=not answer):
+                                if answer:
+                                    agent.provide_clarification(question, answer)
+                                    st.session_state.turn_result = None
+                                    st.session_state.current_session = agent.current_session
+                                    st.toast("Answer submitted! Agent will continue...", icon="✅")
+                                    st.rerun()
+                        
+                        with col_skip_q:
+                            if st.button("⏭️ Skip Question", use_container_width=True):
+                                # Submit "No answer provided" and continue
+                                agent.provide_clarification(question, "[User skipped this question]")
+                                st.session_state.turn_result = None
+                                st.session_state.current_session = agent.current_session
+                                st.rerun()
+                        
+                        with col_abort_q:
+                            if st.button("🛑 Abort Session", use_container_width=True):
+                                agent.abort_session()
+                                st.session_state.turn_result = None
+                                st.session_state.current_session = agent.current_session
+                                st.rerun()
+                    
                     elif turn_result.status == "no_action":
                         st.warning("No action available")
                         st.markdown(f"**Reasoning:** {turn_result.reasoning}")
@@ -899,6 +1049,20 @@ def main():
                     <div class="history-entry">
                         <div class="history-turn">Turn {entry.turn}</div>
                         <div class="history-action">{status} {entry.action.tool_category}/{entry.action.tool_name}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # Clarification history
+            if session.clarifications:
+                st.divider()
+                st.markdown("### 💬 Clarifications")
+                
+                for entry in reversed(session.clarifications[-3:]):
+                    st.markdown(f"""
+                    <div class="history-entry" style="border-left: 3px solid #8b5cf6;">
+                        <div class="history-turn">Turn {entry.turn}</div>
+                        <div style="color: #5b21b6; font-weight: 500;">Q: {entry.question.question[:80]}{'...' if len(entry.question.question) > 80 else ''}</div>
+                        <div style="color: #059669; margin-top: 0.25rem;">A: {entry.answer.answer[:80]}{'...' if len(entry.answer.answer) > 80 else ''}</div>
                     </div>
                     """, unsafe_allow_html=True)
             
