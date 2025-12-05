@@ -14,7 +14,8 @@ from models import (
     Session, Goal, AgentState, Plan, PlanStep, Action,
     HistoryEntry, HistorySummary, TokenBudget, TurnResult, ExecutionResult,
     SessionStatus, StepStatus, TextSpan, generate_id,
-    ClarificationQuestion, ClarificationAnswer, ClarificationEntry
+    ClarificationQuestion, ClarificationAnswer, ClarificationEntry,
+    RejectionFeedback, RejectionEntry
 )
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
@@ -408,8 +409,9 @@ Remember to identify exact text spans for each step."""
         # Format history
         history_str = self._format_history(session.history, session.history_summaries)
         
-        # Include clarifications in context
+        # Include clarifications and rejections in context
         clarifications_str = self._format_clarifications(session.clarifications)
+        rejections_str = self._format_rejections(session.rejections)
         
         system_prompt = f"""You are a continuous planning agent. Each turn, you evaluate the situation and decide the next action OR ask the user a clarification question.
 
@@ -462,6 +464,9 @@ EXECUTION HISTORY:
 
 PREVIOUS CLARIFICATIONS (user answered questions):
 {clarifications_str}
+
+REJECTED ACTIONS (user rejected with feedback - DO NOT repeat these mistakes):
+{rejections_str}
 
 ---
 
@@ -638,6 +643,20 @@ REMINDER:
         
         return "\n".join(parts)
     
+    def _format_rejections(self, rejections: List[RejectionEntry]) -> str:
+        """Format rejection feedback history for prompt."""
+        if not rejections:
+            return "No previous rejections."
+        
+        parts = []
+        for entry in rejections[-3:]:  # Last 3 rejections
+            action = entry.rejection.rejected_action
+            parts.append(f"Turn {entry.turn}: User REJECTED action {action.tool_category}/{action.tool_name}")
+            parts.append(f"  User's feedback: {entry.rejection.feedback}")
+            parts.append("")
+        
+        return "\n".join(parts)
+    
     # ===================
     # Action Execution
     # ===================
@@ -762,6 +781,42 @@ REMINDER:
         )
         
         # Increment turn for the clarification exchange
+        self.session_manager.increment_turn()
+    
+    def reject_action(self, action: Action, feedback: str) -> None:
+        """
+        Process user's rejection of a proposed action with feedback.
+        Stores the rejection for the agent to consider in the next turn.
+        """
+        session = self.current_session
+        if not session:
+            logger.error("No active session for rejection")
+            return
+        
+        # Create rejection feedback object
+        rejection = RejectionFeedback(
+            id=generate_id(),
+            rejected_action=action,
+            feedback=feedback
+        )
+        
+        # Store in session
+        self.session_manager.add_rejection(rejection)
+        
+        # Mark the step as needing revision (back to planned)
+        if action.plan_step_id:
+            self.session_manager.update_step_status(
+                action.plan_step_id,
+                StepStatus.PLANNED  # Reset to planned so agent can retry
+            )
+        
+        # Log it
+        logger.info(f"Action rejected - {action.tool_name}: {feedback[:50]}...")
+        self.session_manager.add_agent_note(
+            f"User rejected '{action.tool_name}': {feedback[:50]}..."
+        )
+        
+        # Increment turn
         self.session_manager.increment_turn()
     
     # ===================

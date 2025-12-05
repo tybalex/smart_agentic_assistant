@@ -334,6 +334,52 @@ class ClarificationEntry:
 
 
 @dataclass
+class RejectionFeedback:
+    """User's rejection of a proposed action with feedback."""
+    id: str
+    rejected_action: Action  # The action that was rejected
+    feedback: str  # User's instructions/reason
+    created_at: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "rejected_action": self.rejected_action.to_dict(),
+            "feedback": self.feedback,
+            "created_at": self.created_at.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RejectionFeedback":
+        return cls(
+            id=data["id"],
+            rejected_action=Action.from_dict(data["rejected_action"]),
+            feedback=data["feedback"],
+            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now()
+        )
+
+
+@dataclass
+class RejectionEntry:
+    """A rejection record in the session history."""
+    turn: int
+    rejection: RejectionFeedback
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "turn": self.turn,
+            "rejection": self.rejection.to_dict()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RejectionEntry":
+        return cls(
+            turn=data["turn"],
+            rejection=RejectionFeedback.from_dict(data["rejection"])
+        )
+
+
+@dataclass
 class HistoryEntry:
     """A single entry in the execution history."""
     turn: int
@@ -441,6 +487,7 @@ class Session:
     history: List[HistoryEntry] = field(default_factory=list)
     history_summaries: List[HistorySummary] = field(default_factory=list)  # Compressed old history
     clarifications: List[ClarificationEntry] = field(default_factory=list)  # Q&A history
+    rejections: List[RejectionEntry] = field(default_factory=list)  # Rejected actions with feedback
     budget: TokenBudget = field(default_factory=TokenBudget)
     status: SessionStatus = SessionStatus.ACTIVE
     agent_notes: List[str] = field(default_factory=list)  # Agent observations
@@ -468,6 +515,7 @@ class Session:
             "history": [h.to_dict() for h in self.history],
             "history_summaries": [hs.to_dict() for hs in self.history_summaries],
             "clarifications": [c.to_dict() for c in self.clarifications],
+            "rejections": [r.to_dict() for r in self.rejections],
             "budget": self.budget.to_dict(),
             "status": self.status.value,
             "agent_notes": self.agent_notes,
@@ -485,6 +533,7 @@ class Session:
             history=[HistoryEntry.from_dict(h) for h in data.get("history", [])],
             history_summaries=[HistorySummary.from_dict(hs) for hs in data.get("history_summaries", [])],
             clarifications=[ClarificationEntry.from_dict(c) for c in data.get("clarifications", [])],
+            rejections=[RejectionEntry.from_dict(r) for r in data.get("rejections", [])],
             budget=TokenBudget.from_dict(data.get("budget", {})),
             status=SessionStatus(data.get("status", "active")),
             agent_notes=data.get("agent_notes", []),

@@ -13,7 +13,8 @@ from models import (
     Session, Goal, AgentState, Plan, PlanStep, Action,
     HistoryEntry, HistorySummary, TokenBudget,
     SessionStatus, StepStatus, TextSpan, generate_id,
-    ClarificationQuestion, ClarificationAnswer, ClarificationEntry
+    ClarificationQuestion, ClarificationAnswer, ClarificationEntry,
+    RejectionFeedback, RejectionEntry
 )
 
 
@@ -433,6 +434,36 @@ class SessionManager:
         if not self.current_session:
             return []
         return self.current_session.clarifications
+    
+    # ===================
+    # Rejection Management
+    # ===================
+    
+    def add_rejection(self, rejection: RejectionFeedback) -> RejectionEntry:
+        """Add a rejection feedback entry to the session."""
+        if not self.current_session:
+            raise ValueError("No active session")
+        
+        entry = RejectionEntry(
+            turn=self.current_session.budget.current_turn,
+            rejection=rejection
+        )
+        
+        self.current_session.rejections.append(entry)
+        self.save_session()
+        return entry
+    
+    def get_recent_rejections(self, n: int = 5) -> List[RejectionEntry]:
+        """Get the N most recent rejection entries."""
+        if not self.current_session:
+            return []
+        return self.current_session.rejections[-n:]
+    
+    def get_all_rejections(self) -> List[RejectionEntry]:
+        """Get all rejection entries."""
+        if not self.current_session:
+            return []
+        return self.current_session.rejections
     
     # ===================
     # Convenience Getters

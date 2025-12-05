@@ -460,6 +460,8 @@ def init_session_state():
         st.session_state.turn_result = None
     if "input_text" not in st.session_state:
         st.session_state.input_text = ""
+    if "show_rejection_input" not in st.session_state:
+        st.session_state.show_rejection_input = False
 
 
 def get_agent() -> ContinuousPlanningAgent:
@@ -910,36 +912,71 @@ def main():
                         
                         st.markdown(render_action_card(action), unsafe_allow_html=True)
                         
-                        col_approve, col_skip, col_abort = st.columns(3)
-                        
-                        with col_approve:
-                            if st.button("✅ Approve", type="primary", use_container_width=True):
-                                with st.spinner("Executing..."):
-                                    result = agent.execute_action(action)
-                                
-                                st.session_state.turn_result = None
-                                st.session_state.current_session = agent.current_session
-                                
-                                if result.success:
-                                    st.toast("Action completed successfully!", icon="✅")
-                                else:
-                                    st.toast(f"Action failed: {result.error}", icon="❌")
-                                
-                                st.rerun()
-                        
-                        with col_skip:
-                            if st.button("⏭️ Skip", use_container_width=True):
-                                agent.skip_action(action)
-                                st.session_state.turn_result = None
-                                st.session_state.current_session = agent.current_session
-                                st.rerun()
-                        
-                        with col_abort:
-                            if st.button("🛑 Abort", use_container_width=True):
-                                agent.abort_session()
-                                st.session_state.turn_result = None
-                                st.session_state.current_session = agent.current_session
-                                st.rerun()
+                        # Check if we're in rejection mode
+                        if st.session_state.get('show_rejection_input', False):
+                            # Show rejection feedback input
+                            st.markdown("---")
+                            st.markdown("**✏️ Provide feedback for the agent:**")
+                            rejection_feedback = st.text_area(
+                                "What should the agent do instead?",
+                                key="rejection_feedback",
+                                placeholder="e.g., 'Use email instead of Slack' or 'The parameters are wrong - use X instead of Y'",
+                                height=100
+                            )
+                            
+                            col_submit_rej, col_cancel_rej = st.columns(2)
+                            
+                            with col_submit_rej:
+                                if st.button("📤 Submit Feedback", type="primary", use_container_width=True, disabled=not rejection_feedback):
+                                    if rejection_feedback:
+                                        agent.reject_action(action, rejection_feedback)
+                                        st.session_state.turn_result = None
+                                        st.session_state.current_session = agent.current_session
+                                        st.session_state.show_rejection_input = False
+                                        st.toast("Feedback submitted! Agent will adjust...", icon="✏️")
+                                        st.rerun()
+                            
+                            with col_cancel_rej:
+                                if st.button("❌ Cancel", use_container_width=True):
+                                    st.session_state.show_rejection_input = False
+                                    st.rerun()
+                        else:
+                            # Show normal action buttons
+                            col_approve, col_reject, col_skip, col_abort = st.columns(4)
+                            
+                            with col_approve:
+                                if st.button("✅ Approve", type="primary", use_container_width=True):
+                                    with st.spinner("Executing..."):
+                                        result = agent.execute_action(action)
+                                    
+                                    st.session_state.turn_result = None
+                                    st.session_state.current_session = agent.current_session
+                                    
+                                    if result.success:
+                                        st.toast("Action completed successfully!", icon="✅")
+                                    else:
+                                        st.toast(f"Action failed: {result.error}", icon="❌")
+                                    
+                                    st.rerun()
+                            
+                            with col_reject:
+                                if st.button("✏️ Reject", use_container_width=True):
+                                    st.session_state.show_rejection_input = True
+                                    st.rerun()
+                            
+                            with col_skip:
+                                if st.button("⏭️ Skip", use_container_width=True):
+                                    agent.skip_action(action)
+                                    st.session_state.turn_result = None
+                                    st.session_state.current_session = agent.current_session
+                                    st.rerun()
+                            
+                            with col_abort:
+                                if st.button("🛑 Abort", use_container_width=True):
+                                    agent.abort_session()
+                                    st.session_state.turn_result = None
+                                    st.session_state.current_session = agent.current_session
+                                    st.rerun()
                     
                     elif turn_result.status == "needs_clarification":
                         question = turn_result.clarification_question
@@ -1046,6 +1083,21 @@ def main():
                         <div class="history-turn">Turn {entry.turn}</div>
                         <div style="color: #5b21b6; font-weight: 500;">Q: {entry.question.question[:80]}{'...' if len(entry.question.question) > 80 else ''}</div>
                         <div style="color: #059669; margin-top: 0.25rem;">A: {entry.answer.answer[:80]}{'...' if len(entry.answer.answer) > 80 else ''}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # Rejection history
+            if session.rejections:
+                st.divider()
+                st.markdown("### ✏️ Rejections")
+                
+                for entry in reversed(session.rejections[-3:]):
+                    action = entry.rejection.rejected_action
+                    st.markdown(f"""
+                    <div class="history-entry" style="border-left: 3px solid #f59e0b;">
+                        <div class="history-turn">Turn {entry.turn}</div>
+                        <div style="color: #b45309; font-weight: 500;">Rejected: {action.tool_category}/{action.tool_name}</div>
+                        <div style="color: #1f2937; margin-top: 0.25rem;">Feedback: {entry.rejection.feedback[:80]}{'...' if len(entry.rejection.feedback) > 80 else ''}</div>
                     </div>
                     """, unsafe_allow_html=True)
             
