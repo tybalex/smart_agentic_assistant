@@ -138,15 +138,42 @@ class ContinuousPlanningAgent:
             raise
     
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
-        """Parse JSON from Claude's response, handling markdown code blocks."""
+        """Parse JSON from Claude's response, handling markdown code blocks and extra text."""
         response = response.strip()
+        
+        # Remove markdown code blocks
         if response.startswith("```"):
             lines = response.split("\n")
             response = "\n".join(lines[1:])
-        if response.endswith("```"):
-            response = response.rsplit("```", 1)[0]
+        if "```" in response:
+            response = response.split("```")[0]
         response = response.strip()
-        return json.loads(response)
+        
+        # Try direct parse first
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to extract JSON object - find matching braces
+        start_idx = response.find('{')
+        if start_idx == -1:
+            raise json.JSONDecodeError("No JSON object found", response, 0)
+        
+        # Find the matching closing brace
+        brace_count = 0
+        end_idx = start_idx
+        for i, char in enumerate(response[start_idx:], start_idx):
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_idx = i + 1
+                    break
+        
+        json_str = response[start_idx:end_idx]
+        return json.loads(json_str)
     
     # ===================
     # Session Initialization
