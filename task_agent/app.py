@@ -615,30 +615,13 @@ def render_clarification_card(question: ClarificationQuestion) -> str:
         options_items = "".join([
             f'<span class="clarification-option">{opt}</span>' for opt in question.options
         ])
-        options_html = f'''
-        <div class="clarification-options">
-            <strong>Suggested options:</strong><br>{options_items}
-        </div>
-        '''
+        options_html = f'<div class="clarification-options"><strong>Suggested options:</strong><br>{options_items}</div>'
     
     context_html = ""
     if question.context:
-        context_html = f'''
-        <div class="clarification-context">
-            <strong>Why I'm asking:</strong> {question.context}
-        </div>
-        '''
+        context_html = f'<div class="clarification-context"><strong>Why I\'m asking:</strong> {question.context}</div>'
     
-    return f"""
-    <div class="clarification-card">
-        <div class="clarification-label">❓ Clarification Needed</div>
-        <div class="clarification-question">
-            {question.question}
-        </div>
-        {context_html}
-        {options_html}
-    </div>
-    """
+    return f'<div class="clarification-card"><div class="clarification-label">❓ Clarification Needed</div><div class="clarification-question">{question.question}</div>{context_html}{options_html}</div>'
 
 
 def main():
