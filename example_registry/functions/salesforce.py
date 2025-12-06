@@ -39,7 +39,7 @@ def salesforce_query(query: str) -> str:
     
     # Simple SOQL parser (very basic)
     if "FROM" not in query.upper():
-        return json.dumps({"error": "Invalid SOQL query"})
+        return json.dumps({"success": False, "error": "Invalid SOQL query"})
     
     # Extract LIMIT clause if present
     limit = None
@@ -56,7 +56,7 @@ def salesforce_query(query: str) -> str:
     # Extract object type
     parts = query.upper().split("FROM")
     if len(parts) < 2:
-        return json.dumps({"error": "Invalid SOQL query"})
+        return json.dumps({"success": False, "error": "Invalid SOQL query"})
     
     object_part = parts[1].strip().split()[0]
     
@@ -68,7 +68,7 @@ def salesforce_query(query: str) -> str:
             break
     
     if not object_type or object_type not in _mock_salesforce:
-        return json.dumps({"error": f"Object type '{object_part}' not found"})
+        return json.dumps({"success": False, "error": f"Object type '{object_part}' not found"})
     
     records = _mock_salesforce[object_type].copy()
     
@@ -88,6 +88,7 @@ def salesforce_query(query: str) -> str:
         records = records[:limit]
     
     return json.dumps({
+        "success": True,
         "totalSize": len(records),
         "done": True,
         "records": records

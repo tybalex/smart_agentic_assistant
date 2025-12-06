@@ -18,7 +18,7 @@ def member_desk_invite(email: str, name: str, role: str) -> str:
     for invitation in _member_desk_invitations:
         if invitation["email"] == email:
             return json.dumps({
-                "ok": True,
+                "success": True,
                 "already_invited": True,
                 "message": f"{email} was already invited to Member Desk on {invitation['invited_at']}"
             })
@@ -36,7 +36,7 @@ def member_desk_invite(email: str, name: str, role: str) -> str:
     _member_desk_invitations.append(invitation)
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "invited": True,
         "email": email,
         "name": name,
@@ -48,7 +48,7 @@ def member_desk_invite(email: str, name: str, role: str) -> str:
 def member_desk_list_invitations() -> str:
     """List all Member Desk invitations"""
     return json.dumps({
-        "ok": True,
+        "success": True,
         "invitations": _member_desk_invitations,
         "total": len(_member_desk_invitations)
     })
@@ -60,12 +60,12 @@ def member_desk_accept_invitation(email: str) -> str:
             invitation["status"] = "accepted"
             invitation["accepted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             return json.dumps({
-                "ok": True,
+                "success": True,
                 "message": f"Invitation for {email} marked as accepted"
             })
     
     return json.dumps({
-        "ok": False,
+        "success": False,
         "error": "Invitation not found"
     })
 
@@ -74,12 +74,12 @@ def member_desk_get_invitation_status(email: str) -> str:
     for invitation in _member_desk_invitations:
         if invitation["email"] == email:
             return json.dumps({
-                "ok": True,
+                "success": True,
                 "invitation": invitation
             })
     
     return json.dumps({
-        "ok": False,
+        "success": False,
         "error": "Invitation not found"
     })
 

@@ -1,0 +1,15 @@
+services:
+  function-registry:
+    build:
+      context: ./example_registry
+      dockerfile: Dockerfile
+    ports:
+      - "9999:9999"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/functions')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+

@@ -3,9 +3,13 @@ Client for the external Tool Registry API at localhost:9999.
 Provides methods to list, search, and execute tools.
 """
 
+import os
 import httpx
 from typing import List, Dict, Any, Optional
 from models import ToolInfo
+
+# Default URL, can be overridden by environment variable (useful for Docker)
+DEFAULT_TOOL_REGISTRY_URL = os.environ.get("TOOL_REGISTRY_URL", "http://localhost:9999")
 
 
 class ToolRegistryClient:
@@ -21,7 +25,7 @@ class ToolRegistryClient:
     - /{category}/{function_name} - Execute a function
     """
     
-    def __init__(self, base_url: str = "http://localhost:9999"):
+    def __init__(self, base_url: str = DEFAULT_TOOL_REGISTRY_URL):
         self.base_url = base_url.rstrip("/")
         self.client = httpx.Client(timeout=30.0)
     

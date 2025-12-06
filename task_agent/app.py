@@ -960,7 +960,7 @@ def main():
                                     st.rerun()
                             
                             with col_reject:
-                                if st.button("✏️ Reject", use_container_width=True):
+                                if st.button("✏️ Reject with Feedback", use_container_width=True):
                                     st.session_state.show_rejection_input = True
                                     st.rerun()
                             

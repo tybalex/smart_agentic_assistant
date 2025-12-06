@@ -63,7 +63,7 @@ def slack_create_channel(name: str, is_private: bool) -> str:
     # Check if channel name already exists
     for channel in _mock_channels.values():
         if channel["name"] == name:
-            return json.dumps({"ok": False, "error": "name_taken"})
+            return json.dumps({"success": False, "error": "name_taken"})
     
     channel_id = f"C{_channel_counter:03d}"
     _channel_counter += 1
@@ -79,7 +79,7 @@ def slack_create_channel(name: str, is_private: bool) -> str:
     _mock_messages[channel_id] = []
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "channel": _mock_channels[channel_id]
     })
 
@@ -95,16 +95,16 @@ def slack_list_channels() -> str:
         }
         for ch in _mock_channels.values()
     ]
-    return json.dumps({"ok": True, "channels": channels})
+    return json.dumps({"success": True, "channels": channels})
 
 
 def slack_get_channel_info(channel_id: str) -> str:
     """Get detailed information about a Slack channel"""
     if channel_id not in _mock_channels:
-        return json.dumps({"ok": False, "error": "channel_not_found"})
+        return json.dumps({"success": False, "error": "channel_not_found"})
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "channel": _mock_channels[channel_id]
     })
 
@@ -112,7 +112,7 @@ def slack_get_channel_info(channel_id: str) -> str:
 def slack_invite_to_channel(channel_id: str, user_ids: list) -> str:
     """Invite users to a Slack channel"""
     if channel_id not in _mock_channels:
-        return json.dumps({"ok": False, "error": "channel_not_found"})
+        return json.dumps({"success": False, "error": "channel_not_found"})
     
     channel = _mock_channels[channel_id]
     invited = []
@@ -129,7 +129,7 @@ def slack_invite_to_channel(channel_id: str, user_ids: list) -> str:
             invited.append(user_id)
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "invited": invited,
         "already_in_channel": already_in,
         "not_found": not_found
@@ -139,20 +139,20 @@ def slack_invite_to_channel(channel_id: str, user_ids: list) -> str:
 def slack_remove_user_from_channel(channel_id: str, user_id: str) -> str:
     """Remove a user from a Slack channel"""
     if channel_id not in _mock_channels:
-        return json.dumps({"ok": False, "error": "channel_not_found"})
+        return json.dumps({"success": False, "error": "channel_not_found"})
     
     channel = _mock_channels[channel_id]
     if user_id in channel["members"]:
         channel["members"].remove(user_id)
-        return json.dumps({"ok": True})
+        return json.dumps({"success": True})
     else:
-        return json.dumps({"ok": False, "error": "not_in_channel"})
+        return json.dumps({"success": False, "error": "not_in_channel"})
 
 
 def slack_send_message(channel_id: str, text: str, blocks: dict = None) -> str:
     """Send a message to a Slack channel"""
     if channel_id not in _mock_channels:
-        return json.dumps({"ok": False, "error": "channel_not_found"})
+        return json.dumps({"success": False, "error": "channel_not_found"})
     
     timestamp = f"{time.time():.6f}"
     message = {
@@ -167,7 +167,7 @@ def slack_send_message(channel_id: str, text: str, blocks: dict = None) -> str:
     _mock_messages[channel_id].append(message)
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "channel": channel_id,
         "ts": timestamp,
         "message": message
@@ -177,12 +177,12 @@ def slack_send_message(channel_id: str, text: str, blocks: dict = None) -> str:
 def slack_list_messages(channel_id: str, limit: int = 10) -> str:
     """List recent messages in a Slack channel"""
     if channel_id not in _mock_channels:
-        return json.dumps({"ok": False, "error": "channel_not_found"})
+        return json.dumps({"success": False, "error": "channel_not_found"})
     
     messages = _mock_messages[channel_id][-limit:]
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "messages": messages,
         "has_more": len(_mock_messages[channel_id]) > limit
     })
@@ -192,7 +192,7 @@ def slack_list_users() -> str:
     """List all users in the Slack workspace"""
     users = list(_mock_users.values())
     return json.dumps({
-        "ok": True,
+        "success": True,
         "members": users
     })
 
@@ -200,9 +200,9 @@ def slack_list_users() -> str:
 def slack_get_user_info(user_id: str) -> str:
     """Get detailed information about a Slack user"""
     if user_id not in _mock_users:
-        return json.dumps({"ok": False, "error": "user_not_found"})
+        return json.dumps({"success": False, "error": "user_not_found"})
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "user": _mock_users[user_id]
     })

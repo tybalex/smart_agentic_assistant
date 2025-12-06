@@ -110,13 +110,13 @@ def github_create_branch(owner: str, repo: str, branch_name: str, base_sha: str)
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
-        return json.dumps({"ok": False, "error": "repository_not_found"})
+        return json.dumps({"success": False, "error": "repository_not_found"})
     
     if repo_full_name not in _mock_branches:
         _mock_branches[repo_full_name] = {}
     
     if branch_name in _mock_branches[repo_full_name]:
-        return json.dumps({"ok": False, "error": "branch_already_exists"})
+        return json.dumps({"success": False, "error": "branch_already_exists"})
     
     # Find base branch by SHA or use default
     base_branch = None
@@ -131,7 +131,7 @@ def github_create_branch(owner: str, repo: str, branch_name: str, base_sha: str)
         if default in _mock_branches[repo_full_name]:
             base_branch = _mock_branches[repo_full_name][default]
         else:
-            return json.dumps({"ok": False, "error": "base_branch_not_found"})
+            return json.dumps({"success": False, "error": "base_branch_not_found"})
     
     # Create new branch
     new_sha = _generate_sha(f"{branch_name}{time.time()}")
@@ -161,7 +161,7 @@ def github_create_branch(owner: str, repo: str, branch_name: str, base_sha: str)
             _mock_files[repo_full_name][branch_name] = {}
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "ref": f"refs/heads/{branch_name}",
         "sha": new_sha,
         "object": {
@@ -176,10 +176,10 @@ def github_commit_file(owner: str, repo: str, path: str, content: str, message: 
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
-        return json.dumps({"ok": False, "error": "repository_not_found"})
+        return json.dumps({"success": False, "error": "repository_not_found"})
     
     if repo_full_name not in _mock_branches or branch not in _mock_branches[repo_full_name]:
-        return json.dumps({"ok": False, "error": "branch_not_found"})
+        return json.dumps({"success": False, "error": "branch_not_found"})
     
     # Initialize files storage if needed
     if repo_full_name not in _mock_files:
@@ -200,7 +200,7 @@ def github_commit_file(owner: str, repo: str, path: str, content: str, message: 
     }
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "content": {
             "name": path.split("/")[-1],
             "path": path,
@@ -222,16 +222,16 @@ def github_create_pr(owner: str, repo: str, title: str, head: str, base: str, bo
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
-        return json.dumps({"ok": False, "error": "repository_not_found"})
+        return json.dumps({"success": False, "error": "repository_not_found"})
     
     if repo_full_name not in _mock_branches:
-        return json.dumps({"ok": False, "error": "no_branches_found"})
+        return json.dumps({"success": False, "error": "no_branches_found"})
     
     if head not in _mock_branches[repo_full_name]:
-        return json.dumps({"ok": False, "error": "head_branch_not_found"})
+        return json.dumps({"success": False, "error": "head_branch_not_found"})
     
     if base not in _mock_branches[repo_full_name]:
-        return json.dumps({"ok": False, "error": "base_branch_not_found"})
+        return json.dumps({"success": False, "error": "base_branch_not_found"})
     
     # Create PR
     pr_number = _pr_counter
@@ -257,7 +257,7 @@ def github_create_pr(owner: str, repo: str, title: str, head: str, base: str, bo
     _mock_prs[repo_full_name].append(pr)
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "number": pr_number,
         "state": "open",
         "title": title,
@@ -276,7 +276,7 @@ def github_list_branches(owner: str, repo: str) -> str:
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
-        return json.dumps({"ok": False, "error": "repository_not_found"})
+        return json.dumps({"success": False, "error": "repository_not_found"})
     
     branches = []
     if repo_full_name in _mock_branches:
@@ -290,7 +290,7 @@ def github_list_branches(owner: str, repo: str) -> str:
                 "protected": branch_data.get("protected", False)
             })
     
-    return json.dumps({"ok": True, "branches": branches})
+    return json.dumps({"success": True, "branches": branches})
 
 
 def github_list_prs(owner: str, repo: str, state: str = "open") -> str:
@@ -298,7 +298,7 @@ def github_list_prs(owner: str, repo: str, state: str = "open") -> str:
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
-        return json.dumps({"ok": False, "error": "repository_not_found"})
+        return json.dumps({"success": False, "error": "repository_not_found"})
     
     prs = []
     if repo_full_name in _mock_prs:
@@ -306,7 +306,7 @@ def github_list_prs(owner: str, repo: str, state: str = "open") -> str:
             if state == "all" or pr["state"] == state:
                 prs.append(pr)
     
-    return json.dumps({"ok": True, "pull_requests": prs, "total": len(prs)})
+    return json.dumps({"success": True, "pull_requests": prs, "total": len(prs)})
 
 
 def github_get_file(owner: str, repo: str, path: str, branch: str) -> str:
@@ -314,21 +314,21 @@ def github_get_file(owner: str, repo: str, path: str, branch: str) -> str:
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
-        return json.dumps({"ok": False, "error": "repository_not_found"})
+        return json.dumps({"success": False, "error": "repository_not_found"})
     
     if repo_full_name not in _mock_branches or branch not in _mock_branches[repo_full_name]:
-        return json.dumps({"ok": False, "error": "branch_not_found"})
+        return json.dumps({"success": False, "error": "branch_not_found"})
     
     if repo_full_name not in _mock_files or branch not in _mock_files[repo_full_name]:
-        return json.dumps({"ok": False, "error": "no_files_in_branch"})
+        return json.dumps({"success": False, "error": "no_files_in_branch"})
     
     if path not in _mock_files[repo_full_name][branch]:
-        return json.dumps({"ok": False, "error": "file_not_found"})
+        return json.dumps({"success": False, "error": "file_not_found"})
     
     content = _mock_files[repo_full_name][branch][path]
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "name": path.split("/")[-1],
         "path": path,
         "sha": _generate_sha(content),
@@ -343,10 +343,10 @@ def github_merge_pr(owner: str, repo: str, pr_number: int, commit_message: str =
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
-        return json.dumps({"ok": False, "error": "repository_not_found"})
+        return json.dumps({"success": False, "error": "repository_not_found"})
     
     if repo_full_name not in _mock_prs:
-        return json.dumps({"ok": False, "error": "pull_request_not_found"})
+        return json.dumps({"success": False, "error": "pull_request_not_found"})
     
     # Find the PR
     pr = None
@@ -356,10 +356,10 @@ def github_merge_pr(owner: str, repo: str, pr_number: int, commit_message: str =
             break
     
     if not pr:
-        return json.dumps({"ok": False, "error": "pull_request_not_found"})
+        return json.dumps({"success": False, "error": "pull_request_not_found"})
     
     if pr["state"] != "open":
-        return json.dumps({"ok": False, "error": "pull_request_not_open"})
+        return json.dumps({"success": False, "error": "pull_request_not_open"})
     
     # Merge the PR (update state)
     pr["state"] = "closed"
@@ -380,7 +380,7 @@ def github_merge_pr(owner: str, repo: str, pr_number: int, commit_message: str =
             _mock_branches[repo_full_name][base_branch]["commit"]["sha"] = merge_sha
     
     return json.dumps({
-        "ok": True,
+        "success": True,
         "merged": True,
         "message": "Pull request successfully merged",
         "sha": _generate_sha(f"merge-{pr_number}")
