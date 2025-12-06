@@ -60,7 +60,7 @@ class ContinuousPlanningAgent:
         
         # Cache available tools
         self._tools_cache: Optional[str] = None
-        self._tools_list: Optional[List[Dict]] = None
+        # _tools_list removed - agent discovers tools on-demand via registry meta-tools
         self._available_categories: set = set()
         self._available_tools: Dict[str, bool] = {}
         
@@ -73,21 +73,27 @@ class ContinuousPlanningAgent:
         return self.session_manager.current_session
     
     def _get_tools_context(self) -> str:
-        """Get formatted context about available tools."""
-        if self._tools_cache is None:
-            self._tools_cache = self.tool_client.get_tools_summary()
-            self._tools_list = self.tool_client.list_all_functions()
-            # Cache available categories and function names for validation
-            self._available_categories = set(self.tool_client.list_categories())
-            self._available_tools = {}
-            for cat in self._available_categories:
-                funcs = self.tool_client.get_functions_by_category(cat)
-                for func in funcs:
-                    if isinstance(func, str):
-                        self._available_tools[f"{cat}/{func}"] = True
-                    else:
-                        self._available_tools[f"{cat}/{func.get('name', '')}"] = True
-            logger.info(f"Loaded {len(self._available_tools)} tools from registry")
+        """
+        Get formatted context about available tools for the agent prompt.
+        The agent only sees a lightweight summary, NOT all function definitions.
+        
+        Refreshes from registry every turn to get current state.
+        """
+        logger.info("Refreshing tools context from registry...")
+        self._tools_cache = self.tool_client.get_tools_summary()
+        
+        # Also refresh validation cache (list of valid tool names)
+        self._available_categories = set(self.tool_client.list_categories())
+        self._available_tools = {}
+        for cat in self._available_categories:
+            funcs = self.tool_client.get_functions_by_category(cat)
+            for func in funcs:
+                if isinstance(func, str):
+                    self._available_tools[f"{cat}/{func}"] = True
+                else:
+                    self._available_tools[f"{cat}/{func.get('name', '')}"] = True
+        
+        logger.info(f"Registry: {len(self._available_tools)} tools across {len(self._available_categories)} categories")
         return self._tools_cache
     
     def _validate_tool(self, category: str, tool_name: str) -> Tuple[bool, str]:
@@ -95,6 +101,10 @@ class ContinuousPlanningAgent:
         Validate that a tool exists in the registry.
         Returns (is_valid, error_message).
         """
+        # Registry meta-tools are always valid
+        if category == "registry" and tool_name in ["registry_search", "registry_list_category", "registry_get_function"]:
+            return True, ""
+        
         # Ensure tools are loaded
         self._get_tools_context()
         
@@ -140,7 +150,11 @@ class ContinuousPlanningAgent:
     
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
         """Parse JSON from Claude's response, handling markdown code blocks and extra text."""
+        original_response = response  # Keep for debugging
         response = response.strip()
+        
+        # Log raw response for debugging
+        logger.debug(f"Raw response to parse (first 500 chars): {response[:500]}")
         
         # Remove markdown code blocks
         if response.startswith("```"):
@@ -159,6 +173,7 @@ class ContinuousPlanningAgent:
         # Try to extract JSON object - find matching braces
         start_idx = response.find('{')
         if start_idx == -1:
+            logger.error(f"No JSON object found in response. Full response: {original_response[:1000]}")
             raise json.JSONDecodeError("No JSON object found", response, 0)
         
         # Find the matching closing brace
@@ -305,9 +320,11 @@ Remember to identify exact text spans for each step."""
         1. Check budget
         2. Summarize history if needed
         3. Evaluate current state and update plan
-        4. Propose next action
+        4. Auto-execute registry discovery tools (no approval needed)
+        5. Propose next action (requires user approval)
         
         Returns TurnResult with proposed action for user approval.
+        Registry tool calls are auto-executed and don't count as turns.
         """
         session = self.current_session
         if not session:
@@ -326,72 +343,101 @@ Remember to identify exact text spans for each step."""
         if len(session.history) >= self.summarize_after:
             self._summarize_history()
         
-        # Evaluate and plan
-        evaluation = self._evaluate_and_plan()
+        # Registry results from auto-executed discovery calls
+        registry_results: List[Dict[str, Any]] = []
+        max_registry_calls = 10  # Prevent infinite loops
         
-        # Check if goal is achieved
-        if evaluation.get("goal_achieved", False):
-            self.session_manager.set_session_status(SessionStatus.COMPLETED)
-            self.session_manager.add_agent_note("Goal achieved!")
-            return TurnResult(
-                status="completed",
-                session=self.current_session,
-                goal_achieved=True,
-                reasoning=evaluation.get("reasoning", "All objectives completed.")
-            )
-        
-        # Check for clarification question first
-        clarification_data = evaluation.get("clarification_question")
-        if clarification_data and isinstance(clarification_data, dict) and clarification_data.get("question"):
-            # Agent wants to ask a question
-            question = ClarificationQuestion(
+        while len(registry_results) < max_registry_calls:
+            # Evaluate and plan (pass registry results if any)
+            evaluation = self._evaluate_and_plan(registry_results=registry_results)
+            
+            # Check if goal is achieved
+            if evaluation.get("goal_achieved", False):
+                self.session_manager.set_session_status(SessionStatus.COMPLETED)
+                self.session_manager.add_agent_note("Goal achieved!")
+                return TurnResult(
+                    status="completed",
+                    session=self.current_session,
+                    goal_achieved=True,
+                    reasoning=evaluation.get("reasoning", "All objectives completed.")
+                )
+            
+            # Check for clarification question
+            clarification_data = evaluation.get("clarification_question")
+            if clarification_data and isinstance(clarification_data, dict) and clarification_data.get("question"):
+                question = ClarificationQuestion(
+                    id=generate_id(),
+                    question=clarification_data.get("question", ""),
+                    context=clarification_data.get("context", ""),
+                    options=clarification_data.get("options", []),
+                    related_step_id=clarification_data.get("related_step_id")
+                )
+                logger.info(f"Agent asking clarification: {question.question[:50]}...")
+                return TurnResult(
+                    status="needs_clarification",
+                    session=self.current_session,
+                    clarification_question=question,
+                    reasoning=evaluation.get("reasoning", "Need more information to proceed.")
+                )
+            
+            # Get proposed action
+            action_data = evaluation.get("next_action")
+            if not action_data:
+                return TurnResult(
+                    status="no_action",
+                    session=self.current_session,
+                    reasoning=evaluation.get("reasoning", "No suitable action available."),
+                    error=evaluation.get("blocker")
+                )
+            
+            # Check if this is a registry discovery tool - auto-execute!
+            tool_category = action_data.get("tool_category", "")
+            tool_name = action_data.get("tool_name", "")
+            
+            if tool_category == "registry" and tool_name in ["registry_search", "registry_list_category", "registry_get_function"]:
+                # Auto-execute registry tool (no approval needed, doesn't count as turn)
+                logger.info(f"Auto-executing registry tool: {tool_name}")
+                result = self._execute_registry_tool(tool_name, action_data.get("parameters", {}))
+                
+                registry_results.append({
+                    "tool": tool_name,
+                    "params": action_data.get("parameters", {}),
+                    "result": result
+                })
+                logger.info(f"Registry call #{len(registry_results)} completed, continuing evaluation...")
+                continue  # Loop back to evaluate with new info
+            
+            # Non-registry action - return for user approval
+            action = Action(
                 id=generate_id(),
-                question=clarification_data.get("question", ""),
-                context=clarification_data.get("context", ""),
-                options=clarification_data.get("options", []),
-                related_step_id=clarification_data.get("related_step_id")
+                plan_step_id=action_data.get("plan_step_id", ""),
+                tool_category=tool_category,
+                tool_name=tool_name,
+                parameters=action_data.get("parameters", {}),
+                reasoning=action_data.get("reasoning", evaluation.get("reasoning", ""))
             )
             
-            logger.info(f"Agent asking clarification: {question.question[:50]}...")
-            
             return TurnResult(
-                status="needs_clarification",
+                status="awaiting_approval",
                 session=self.current_session,
-                clarification_question=question,
-                reasoning=evaluation.get("reasoning", "Need more information to proceed.")
+                proposed_action=action,
+                reasoning=evaluation.get("reasoning", "")
             )
         
-        # Get proposed action
-        action_data = evaluation.get("next_action")
-        if not action_data:
-            # No action proposed - might be stuck or need user input
-            return TurnResult(
-                status="no_action",
-                session=self.current_session,
-                reasoning=evaluation.get("reasoning", "No suitable action available."),
-                error=evaluation.get("blocker")
-            )
-        
-        # Create Action object
-        action = Action(
-            id=generate_id(),
-            plan_step_id=action_data.get("plan_step_id", ""),
-            tool_category=action_data.get("tool_category", ""),
-            tool_name=action_data.get("tool_name", ""),
-            parameters=action_data.get("parameters", {}),
-            reasoning=action_data.get("reasoning", evaluation.get("reasoning", ""))
-        )
-        
+        # Safety: too many registry calls
+        logger.warning(f"Max registry calls ({max_registry_calls}) reached")
         return TurnResult(
-            status="awaiting_approval",
+            status="error",
             session=self.current_session,
-            proposed_action=action,
-            reasoning=evaluation.get("reasoning", "")
+            error=f"Agent made too many registry discovery calls ({max_registry_calls}). May be stuck in a loop."
         )
     
-    def _evaluate_and_plan(self) -> Dict[str, Any]:
+    def _evaluate_and_plan(self, registry_results: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Core evaluation: assess current state, update plan, propose action.
+        
+        Args:
+            registry_results: Results from auto-executed registry discovery calls (if any)
         """
         logger.info("Starting evaluation and planning...")
         
@@ -413,6 +459,9 @@ Remember to identify exact text spans for each step."""
         clarifications_str = self._format_clarifications(session.clarifications)
         rejections_str = self._format_rejections(session.rejections)
         
+        # Format registry discovery results (from auto-executed calls this turn)
+        registry_str = self._format_registry_results(registry_results or [])
+        
         system_prompt = f"""You are a continuous planning agent. Each turn, you evaluate the situation and decide the next action OR ask the user a clarification question.
 
 AVAILABLE TOOLS (from tool registry at localhost:9999):
@@ -426,6 +475,12 @@ CRITICAL CONSTRAINTS - YOU MUST FOLLOW THESE:
 - If the next step requires a capability not in the available tools, set "next_action" to null and explain in "blockers"
 - Every tool_category and tool_name you propose MUST exist in the AVAILABLE TOOLS list above
 - PARAMETER NAMES MUST MATCH EXACTLY as shown in the tool registry (e.g., if registry shows "data", use "data" NOT "fields")
+
+REGISTRY DISCOVERY TOOLS (auto-executed, no approval needed):
+- registry/registry_search: Search for functions by keyword - USE THIS to find functions
+- registry/registry_list_category: List all functions in a category
+- registry/registry_get_function: Get full details of a specific function (ALWAYS use before calling a function!)
+These tools are executed automatically without user approval. Use them freely to discover what functions are available and their exact parameter names BEFORE proposing an actual action.
 
 YOUR RESPONSIBILITIES:
 1. Evaluate progress toward the goal
@@ -468,6 +523,9 @@ PREVIOUS CLARIFICATIONS (user answered questions):
 REJECTED ACTIONS (user rejected with feedback - DO NOT repeat these mistakes):
 {rejections_str}
 
+REGISTRY DISCOVERY RESULTS (from auto-executed calls this turn):
+{registry_str}
+
 ---
 
 Evaluate the situation and respond with JSON:
@@ -506,7 +564,9 @@ REMINDER:
 - When specifying "parameters", use the EXACT parameter names shown in AVAILABLE TOOLS.
 - If you need clarification from the user, set "next_action" to null and provide "clarification_question".
 - If you have enough info to proceed, set "clarification_question" to null and provide "next_action".
-- Don't ask unnecessary questions - only ask when genuinely uncertain about something important."""
+- Don't ask unnecessary questions - only ask when genuinely uncertain about something important.
+- If the user's answer to a previous clarification is itself a question or challenge, you should ask another clarification question to address their concern.
+- ALWAYS respond with valid JSON - never respond with plain text."""
 
         try:
             response, tokens = self._call_claude(system_prompt, user_message)
@@ -534,11 +594,19 @@ REMINDER:
             
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing evaluation response: {e}")
-            logger.debug(f"Raw response: {response[:500] if 'response' in dir() else 'N/A'}...")
+            # Log the raw response that failed to parse
+            raw_resp = "N/A"
+            try:
+                raw_resp = response[:1000] if response else "EMPTY RESPONSE"
+                logger.error(f"Raw response that failed to parse: {raw_resp}")
+            except:
+                logger.error("Could not log raw response")
+            
+            # Return error but keep going - maybe Claude responded conversationally
             return {
                 "goal_achieved": False,
-                "error": f"Failed to parse AI response: {e}",
-                "reasoning": "Error in AI response parsing"
+                "error": f"AI response was not valid JSON. Claude said: '{raw_resp[:200]}...'",
+                "reasoning": "The AI responded conversationally instead of JSON. Please try again."
             }
         except Exception as e:
             logger.error(f"Error in evaluation: {e}", exc_info=True)
@@ -657,9 +725,64 @@ REMINDER:
         
         return "\n".join(parts)
     
+    def _format_registry_results(self, registry_results: List[Dict[str, Any]]) -> str:
+        """Format auto-executed registry discovery results for prompt."""
+        if not registry_results:
+            return "No registry calls made this turn. Use registry tools to discover available functions."
+        
+        parts = []
+        for i, call in enumerate(registry_results, 1):
+            tool = call.get("tool", "unknown")
+            params = call.get("params", {})
+            result = call.get("result", {})
+            
+            parts.append(f"Call #{i}: {tool}")
+            parts.append(f"  Parameters: {json.dumps(params)}")
+            
+            if result.get("success"):
+                result_data = result.get("result", {})
+                # Truncate large results
+                result_str = json.dumps(result_data, indent=2)
+                if len(result_str) > 1500:
+                    result_str = result_str[:1500] + "\n... (truncated)"
+                parts.append(f"  Result: {result_str}")
+            else:
+                parts.append(f"  Error: {result.get('error', 'Unknown error')}")
+            parts.append("")
+        
+        return "\n".join(parts)
+    
     # ===================
     # Action Execution
     # ===================
+    
+    def _execute_registry_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a registry meta-tool (search, list_category, get_function).
+        These tools help the agent discover available functions without loading all of them.
+        """
+        logger.info(f"Executing registry meta-tool: {tool_name} with params: {parameters}")
+        
+        if tool_name == "registry_search":
+            q = parameters.get("q", "")
+            if not q:
+                return {"success": False, "error": "Missing required parameter 'q' for registry_search"}
+            return self.tool_client.registry_search(q)
+        
+        elif tool_name == "registry_list_category":
+            category = parameters.get("category", "")
+            if not category:
+                return {"success": False, "error": "Missing required parameter 'category' for registry_list_category"}
+            return self.tool_client.registry_list_category(category)
+        
+        elif tool_name == "registry_get_function":
+            function_name = parameters.get("function_name", "")
+            if not function_name:
+                return {"success": False, "error": "Missing required parameter 'function_name' for registry_get_function"}
+            return self.tool_client.registry_get_function(function_name)
+        
+        else:
+            return {"success": False, "error": f"Unknown registry tool: {tool_name}"}
     
     def execute_action(self, action: Action) -> ExecutionResult:
         """
@@ -697,12 +820,16 @@ REMINDER:
                 tool_params=action.parameters
             )
         
-        # Execute the tool (only reaches here if validation passed)
-        result = self.tool_client.execute_function(
-            action.tool_category,
-            action.tool_name,
-            action.parameters
-        )
+        # Handle registry meta-tools specially
+        if action.tool_category == "registry":
+            result = self._execute_registry_tool(action.tool_name, action.parameters)
+        else:
+            # Execute the tool via registry API
+            result = self.tool_client.execute_function(
+                action.tool_category,
+                action.tool_name,
+                action.parameters
+            )
         
         # Update plan step status based on result
         if action.plan_step_id:

@@ -224,65 +224,126 @@ class ToolRegistryClient:
     
     def get_tools_summary(self) -> str:
         """
-        Get a formatted summary of all available tools.
-        Useful for providing context to the AI agent.
-        Includes parameter details so the agent knows exact field names.
+        Get a HIGH-LEVEL summary of the tool registry.
+        Does NOT include individual function details - agent should use
+        registry discovery tools to find specific functions.
         """
         categories = self.list_categories()
         
-        summary_parts = [
-            "Available Tools Summary:",
-            f"Categories: {', '.join(categories) if categories else 'N/A'}",
-            "",
-            "Functions by Category:"
-        ]
+        # Get total count without loading all details
+        try:
+            response = self.client.get(f"{self.base_url}/functions")
+            response.raise_for_status()
+            data = response.json()
+            total_count = data.get("total", len(data.get("functions", [])))
+        except Exception:
+            total_count = "unknown"
         
-        # Get functions by category for better organization
-        total_count = 0
-        for cat in categories:
-            funcs = self.get_functions_by_category(cat)
-            if funcs:
-                summary_parts.append(f"\n[{cat}]")
-                for func in funcs:
-                    # Handle both dict and string responses
-                    func_name = func if isinstance(func, str) else func.get("name", "unknown")
-                    
-                    # Fetch full details to get parameters
-                    func_details = self.get_function(func_name)
-                    
-                    if func_details:
-                        name = func_details.get("name", func_name)
-                        desc = func_details.get("description", "No description")
-                        params = func_details.get("parameters", {})
-                        
-                        # Truncate long descriptions
-                        if len(desc) > 100:
-                            desc = desc[:97] + "..."
-                        
-                        summary_parts.append(f"  - {name}: {desc}")
-                        
-                        # Add parameter details
-                        if params:
-                            param_strs = []
-                            for param_name, param_info in params.items():
-                                if isinstance(param_info, dict):
-                                    param_type = param_info.get("type", "any")
-                                    required = param_info.get("required", False)
-                                    req_str = " (required)" if required else ""
-                                    param_strs.append(f"{param_name}: {param_type}{req_str}")
-                                else:
-                                    param_strs.append(f"{param_name}")
-                            if param_strs:
-                                summary_parts.append(f"      Parameters: {', '.join(param_strs)}")
-                    else:
-                        summary_parts.append(f"  - {func_name}")
-                    
-                    total_count += 1
+        summary = f"""TOOL REGISTRY OVERVIEW:
+Total Functions: {total_count}
+Categories: {', '.join(categories) if categories else 'N/A'}
+
+TO DISCOVER FUNCTIONS, use these registry tools:
+
+[registry] - Meta-tools for discovering available functions
+  - registry_search: Search functions by keyword
+      Parameters: q: str (required) - search query
+      Example: {{"q": "slack message"}} → finds slack_send_message, etc.
+  
+  - registry_list_category: List all functions in a category  
+      Parameters: category: str (required)
+      Example: {{"category": "salesforce"}} → lists all Salesforce functions
+  
+  - registry_get_function: Get full details of a specific function
+      Parameters: function_name: str (required)
+      Example: {{"function_name": "slack_send_message"}} → returns params, description
+
+WORKFLOW:
+1. Use registry_search or registry_list_category to find relevant functions
+2. Use registry_get_function to get exact parameter names before calling
+3. Then call the actual function with correct parameters"""
         
-        # Insert total count at the beginning
-        summary_parts.insert(1, f"Total Functions: {total_count}")
-        
-        return "\n".join(summary_parts)
+        return summary
+    
+    # ===================
+    # Registry Discovery Tools (meta-tools for agent)
+    # ===================
+    
+    def registry_search(self, q: str) -> Dict[str, Any]:
+        """
+        Search for functions by keyword.
+        Returns matching functions with their details.
+        """
+        logger.info(f"Registry search: q={q}")
+        try:
+            response = self.client.get(f"{self.base_url}/search", params={"q": q})
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"Search returned {data.get('total', 0)} results")
+            return {
+                "success": True,
+                "result": data
+            }
+        except Exception as e:
+            logger.error(f"Registry search failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def registry_list_category(self, category: str) -> Dict[str, Any]:
+        """
+        List all functions in a specific category.
+        """
+        logger.info(f"Registry list category: {category}")
+        try:
+            response = self.client.get(f"{self.base_url}/functions/category/{category}")
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"Category {category} has {data.get('total', 0)} functions")
+            return {
+                "success": True,
+                "result": data
+            }
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Category not found: {category}")
+            return {
+                "success": False,
+                "error": f"Category '{category}' not found"
+            }
+        except Exception as e:
+            logger.error(f"Registry list category failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def registry_get_function(self, function_name: str) -> Dict[str, Any]:
+        """
+        Get full details of a specific function including parameters.
+        """
+        logger.info(f"Registry get function: {function_name}")
+        try:
+            response = self.client.get(f"{self.base_url}/functions/{function_name}")
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"Got details for function: {function_name}")
+            return {
+                "success": True,
+                "result": data
+            }
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Function not found: {function_name}")
+            return {
+                "success": False,
+                "error": f"Function '{function_name}' not found"
+            }
+        except Exception as e:
+            logger.error(f"Registry get function failed: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
     
     def get_tools_for_agent(self) -> List[ToolInfo]:
         """

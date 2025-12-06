@@ -3,20 +3,69 @@ import json
 import random
 
 def google_receive_membership_email() -> str:
-    """Receive a membership email from Google"""
-    name_pool = ["Alex", "Ben", "Charlie", "David", "Ethan", "Frank", "George", "Henry", "Isaac", "Jack", "Liam", "Mason", "Noah", "Oliver", "Parker", "Quinn", "Ryan", "Samuel", "Thomas", "William"]
-    first_name = name_pool[random.randint(0, len(name_pool) - 1)]
-    last_name = name_pool[random.randint(0, len(name_pool) - 1)]
-    email = f"{first_name.lower()}.{last_name.lower()}@gmail.com"
+    """Receive a membership email notification for a new member organization"""
+    
+    # Random data pools
+    first_names = ["Sarah", "James", "Emily", "Michael", "Jennifer", "David", "Lisa", "Robert", "Amanda", "William", "Jessica", "Daniel", "Ashley", "Christopher", "Nicole", "Andrew", "Stephanie", "Kevin", "Michelle", "Brian"]
+    last_names = ["Chen", "Rodriguez", "Watson", "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Martinez", "Wilson", "Anderson", "Taylor", "Thomas", "Moore", "Jackson", "Martin", "Lee"]
+    
+    companies = [
+        ("Acorn Technologies Inc.", "acorntech.io"),
+        ("CloudScale Systems", "cloudscale.com"),
+        ("DataFlow Analytics", "dataflow.io"),
+        ("Quantum Computing Labs", "quantumlabs.tech"),
+        ("NextGen Software", "nextgensoft.com"),
+        ("Alpine Data Solutions", "alpinedata.io"),
+        ("Velocity Networks", "velocitynet.com"),
+        ("Stellar Innovations", "stellarinno.tech"),
+        ("BlueSky Technologies", "blueskytech.io"),
+        ("RedPoint Systems", "redpointsys.com"),
+        ("GreenLeaf Software", "greenleafsoft.com"),
+        ("OceanView Analytics", "oceanview.io"),
+    ]
+    
+    membership_levels = ["End User Supporter", "Silver", "Gold", "Platinum"]
+    regions = ["Standard", "China", "Korea"]
+    
+    primary_roles = ["VP of Engineering", "CTO", "Director of Engineering", "Head of Platform", "Chief Architect"]
+    technical_roles = ["Senior DevOps Engineer", "Principal Engineer", "Staff Engineer", "Infrastructure Lead", "Platform Engineer"]
+    marketing_roles = ["Marketing Director", "VP of Marketing", "Head of Developer Relations", "Community Manager", "Marketing Manager"]
+    
+    # Generate random company
+    company_name, domain = random.choice(companies)
+    
+    # Generate random contacts
+    def generate_contact(roles):
+        first = random.choice(first_names)
+        last = random.choice(last_names)
+        role = random.choice(roles)
+        email_name = f"{first.lower()}.{last.lower()[0]}"
+        return {
+            "name": f"{first} {last}",
+            "email": f"{email_name}@{domain}",
+            "role": role
+        }
+    
+    # Generate join date (random date in 2024-2025)
+    year = random.choice([2024, 2025])
+    month = random.randint(1, 12)
+    day = random.randint(1, 28)
+    join_date = f"{year}-{month:02d}-{day:02d}"
     
     return json.dumps({
         "success": True,
         "email_content": {
-            "subject": "Welcome to the Google Group",
-            "user_name": f"{first_name} {last_name}",
-            "email": email,
-            "membership_level": "premium",
-            "join_date": f"2021-01-{random.randint(1, 31):02d}"
+            "subject": f"New Member Notification: {company_name}",
+            "company_name": company_name,
+            "membership_level": random.choice(membership_levels),
+            "join_date": join_date,
+            "region": random.choice(regions),
+            "end_user_qualified": random.choice([True, False]),
+            "contacts": {
+                "primary": generate_contact(primary_roles),
+                "technical": generate_contact(technical_roles),
+                "marketing": generate_contact(marketing_roles)
+            }
         }
     })
 

@@ -179,13 +179,23 @@ def get_all_categories() -> List[str]:
 
 
 def search_functions(query: str) -> List[Dict[str, Any]]:
-    """Search functions by name or description"""
-    query_lower = query.lower()
+    """Search functions by name or description
+    
+    Splits query into words and matches if ALL words are found
+    in either the function name or description.
+    """
+    # Split query into words and normalize
+    query_words = query.lower().split()
     results = []
     
     for name, info in DISCOVERED_FUNCTIONS.items():
-        if (query_lower in name.lower() or 
-            query_lower in info['description'].lower()):
+        # Create searchable text from name (replace underscores with spaces) and description
+        name_text = name.lower().replace('_', ' ')
+        desc_text = info['description'].lower()
+        searchable = f"{name_text} {desc_text}"
+        
+        # Check if ALL query words are present
+        if all(word in searchable for word in query_words):
             results.append({
                 'name': name,
                 'description': info['description'],
