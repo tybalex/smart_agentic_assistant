@@ -206,3 +206,71 @@ def slack_get_user_info(user_id: str) -> str:
         "success": True,
         "user": _mock_users[user_id]
     })
+
+
+def slack_invite_user(email: str, name: str, channels: list = None) -> str:
+    """Invite a user to the Slack workspace
+    
+    In this mock, the user is immediately created and added to specified channels.
+    
+    Args:
+        email: User's email address
+        name: User's display name
+        channels: Optional list of channel IDs to add the user to
+    
+    Returns:
+        JSON with success status and user details
+    """
+    global _user_counter
+    
+    # Check if user with this email already exists
+    for user in _mock_users.values():
+        if user.get("email") == email:
+            return json.dumps({
+                "success": True,
+                "already_invited": True,
+                "message": f"User with email {email} already exists in workspace",
+                "user": user
+            })
+    
+    # Create new user
+    user_id = f"U{_user_counter:03d}"
+    _user_counter += 1
+    
+    # Generate username from email
+    username = email.split("@")[0].lower().replace(".", "_")
+    
+    new_user = {
+        "id": user_id,
+        "name": username,
+        "real_name": name,
+        "email": email,
+        "is_admin": False
+    }
+    
+    _mock_users[user_id] = new_user
+    
+    # Add to specified channels
+    channels_joined = []
+    channels_not_found = []
+    
+    if channels:
+        for channel_id in channels:
+            if channel_id in _mock_channels:
+                if user_id not in _mock_channels[channel_id]["members"]:
+                    _mock_channels[channel_id]["members"].append(user_id)
+                channels_joined.append({
+                    "id": channel_id,
+                    "name": _mock_channels[channel_id]["name"]
+                })
+            else:
+                channels_not_found.append(channel_id)
+    
+    return json.dumps({
+        "success": True,
+        "invited": True,
+        "user": new_user,
+        "channels_joined": channels_joined,
+        "channels_not_found": channels_not_found,
+        "message": f"Invited {name} ({email}) to workspace"
+    })

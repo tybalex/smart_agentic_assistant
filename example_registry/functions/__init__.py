@@ -47,7 +47,8 @@ from .slack import (
     slack_remove_user_from_channel,
     slack_list_messages,
     slack_list_users,
-    slack_get_user_info
+    slack_get_user_info,
+    slack_invite_user
 )
 
 # GitHub
@@ -184,6 +185,7 @@ FUNCTION_MAP = {
     "slack_list_messages": slack_list_messages,
     "slack_list_users": slack_list_users,
     "slack_get_user_info": slack_get_user_info,
+    "slack_invite_user": slack_invite_user,
     
     # GitHub
     "github_create_branch": github_create_branch,
@@ -306,6 +308,7 @@ __all__ = [
     "slack_list_messages",
     "slack_list_users",
     "slack_get_user_info",
+    "slack_invite_user",
     
     # GitHub
     "github_create_branch",

@@ -4,9 +4,14 @@ Provides methods to list, search, and execute tools.
 """
 
 import os
+import json
+import logging
 import httpx
 from typing import List, Dict, Any, Optional
 from models import ToolInfo
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Default URL, can be overridden by environment variable (useful for Docker)
 DEFAULT_TOOL_REGISTRY_URL = os.environ.get("TOOL_REGISTRY_URL", "http://localhost:9999")
@@ -146,25 +151,72 @@ class ToolRegistryClient:
             params: Parameters to pass to the function
             
         Returns:
-            Dict containing the result or error
+            Dict containing the result or error.
+            Success is determined by:
+            - HTTP 200 response
+            - Response is valid JSON
+            - JSON has "success" field set to true
         """
+        url = f"{self.base_url}/{category}/{function_name}"
+        logger.info(f"Executing function: {category}/{function_name}")
+        logger.info(f"Parameters: {json.dumps(params or {})}")
+        
         try:
-            url = f"{self.base_url}/{category}/{function_name}"
-            
             # Always send a JSON body (API requires it even for no-param functions)
             response = self.client.post(url, json=params or {})
             
+            # Log raw response
+            logger.info(f"HTTP Status: {response.status_code}")
+            logger.info(f"Raw response: {response.text[:1000]}")  # Limit to 1000 chars
+            
+            # Check HTTP status
             response.raise_for_status()
+            
+            # Try to parse JSON
+            try:
+                result_data = response.json()
+            except json.JSONDecodeError as e:
+                logger.error(f"Response is not valid JSON: {e}")
+                return {
+                    "success": False,
+                    "error": f"Invalid JSON response: {response.text[:200]}",
+                    "raw_response": response.text
+                }
+            
+            # Check for "success" field in the response
+            if "success" not in result_data:
+                logger.warning(f"Response missing 'success' field: {result_data}")
+                return {
+                    "success": False,
+                    "error": "Response missing 'success' field",
+                    "result": result_data
+                }
+            
+            # Check if success is true
+            if not result_data.get("success"):
+                error_msg = result_data.get("error", result_data.get("message", "Unknown error"))
+                logger.error(f"Function returned success=false: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "result": result_data
+                }
+            
+            # Success!
+            logger.info(f"Function executed successfully")
             return {
                 "success": True,
-                "result": response.json()
+                "result": result_data
             }
+            
         except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
             return {
                 "success": False,
                 "error": f"HTTP {e.response.status_code}: {e.response.text}"
             }
         except Exception as e:
+            logger.error(f"Unexpected error: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)
