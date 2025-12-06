@@ -13,9 +13,7 @@ from models import ToolInfo
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Default URL, can be overridden by environment variable (useful for Docker)
-DEFAULT_TOOL_REGISTRY_URL = os.environ.get("TOOL_REGISTRY_URL", "http://localhost:9999")
-
+from constant import DEFAULT_TOOL_REGISTRY_URL
 
 class ToolRegistryClient:
     """
@@ -386,7 +384,7 @@ WORKFLOW:
 
 
 # Convenience function for quick tool lookup
-def get_tool_client(base_url: str = "http://localhost:9999") -> ToolRegistryClient:
+def get_tool_client(base_url: str = DEFAULT_TOOL_REGISTRY_URL) -> ToolRegistryClient:
     """Create and return a tool registry client."""
     return ToolRegistryClient(base_url)
 

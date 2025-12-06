@@ -19,6 +19,7 @@ from models import (
 )
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
+from constant import DEFAULT_MODEL, DEFAULT_TOOL_REGISTRY_URL
 
 # Configure logging
 logging.basicConfig(
@@ -38,7 +39,7 @@ class ContinuousPlanningAgent:
         self,
         session_manager: SessionManager,
         tool_client: ToolRegistryClient,
-        model: str = "claude-sonnet-4-5-20250929"
+        model: str = DEFAULT_MODEL
     ):
         self.session_manager = session_manager
         self.tool_client = tool_client
@@ -1109,7 +1110,7 @@ Respond with JSON:
 
 def create_agent(
     storage_dir: str = "./task_data",
-    tool_api_url: str = "http://localhost:9999"
+    tool_api_url: str = DEFAULT_TOOL_REGISTRY_URL
 ) -> ContinuousPlanningAgent:
     """Factory function to create a fully configured agent."""
     session_manager = SessionManager(storage_dir)
