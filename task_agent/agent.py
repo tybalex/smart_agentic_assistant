@@ -156,12 +156,33 @@ class ContinuousPlanningAgent:
         # Log raw response for debugging
         logger.debug(f"Raw response to parse (first 500 chars): {response[:500]}")
         
-        # Remove markdown code blocks
-        if response.startswith("```"):
-            lines = response.split("\n")
-            response = "\n".join(lines[1:])
-        if "```" in response:
-            response = response.split("```")[0]
+        # Handle markdown code blocks - extract content between ```json and ```
+        if "```json" in response:
+            # Find the JSON block
+            start = response.find("```json")
+            if start != -1:
+                start += len("```json")
+                end = response.find("```", start)
+                if end != -1:
+                    response = response[start:end].strip()
+                else:
+                    response = response[start:].strip()
+        elif "```" in response:
+            # Generic code block - find content between first ``` and next ```
+            parts = response.split("```")
+            for part in parts[1:]:  # Skip anything before first ```
+                # Remove language tag if present (e.g., "json\n")
+                if part.strip().startswith("json"):
+                    part = part.strip()[4:].strip()
+                elif "\n" in part:
+                    # Check if first line is a language tag
+                    first_line, rest = part.split("\n", 1)
+                    if first_line.strip().isalpha() and len(first_line.strip()) < 15:
+                        part = rest
+                if "{" in part:
+                    response = part.strip()
+                    break
+        
         response = response.strip()
         
         # Try direct parse first
@@ -173,8 +194,13 @@ class ContinuousPlanningAgent:
         # Try to extract JSON object - find matching braces
         start_idx = response.find('{')
         if start_idx == -1:
-            logger.error(f"No JSON object found in response. Full response: {original_response[:1000]}")
-            raise json.JSONDecodeError("No JSON object found", response, 0)
+            # Last resort: search in original response for any JSON object
+            start_idx = original_response.find('{')
+            if start_idx != -1:
+                response = original_response[start_idx:]
+            else:
+                logger.error(f"No JSON object found in response. Full response: {original_response[:1000]}")
+                raise json.JSONDecodeError("No JSON object found", response, 0)
         
         # Find the matching closing brace
         brace_count = 0
@@ -736,16 +762,59 @@ REMINDER:
             params = call.get("params", {})
             result = call.get("result", {})
             
-            parts.append(f"Call #{i}: {tool}")
-            parts.append(f"  Parameters: {json.dumps(params)}")
+            parts.append(f"Call #{i}: {tool}({json.dumps(params)})")
             
             if result.get("success"):
                 result_data = result.get("result", {})
-                # Truncate large results
-                result_str = json.dumps(result_data, indent=2)
-                if len(result_str) > 1500:
-                    result_str = result_str[:1500] + "\n... (truncated)"
-                parts.append(f"  Result: {result_str}")
+                
+                # Format search results more concisely
+                if tool == "registry_search" and "results" in result_data:
+                    functions = result_data.get("results", [])
+                    total = result_data.get("total", len(functions))
+                    parts.append(f"  Found {total} functions:")
+                    # Show up to 15 results with key info
+                    for func in functions[:15]:
+                        name = func.get("name", "?")
+                        desc = func.get("description", "")[:60]
+                        cat = func.get("category", "?")
+                        parts.append(f"    - {cat}/{name}: {desc}")
+                    if total > 15:
+                        parts.append(f"    ... and {total - 15} more")
+                
+                # Format category listing concisely
+                elif tool == "registry_list_category" and "functions" in result_data:
+                    functions = result_data.get("functions", [])
+                    total = result_data.get("total", len(functions))
+                    parts.append(f"  Category has {total} functions:")
+                    for func in functions[:15]:
+                        name = func.get("name", "?")
+                        desc = func.get("description", "")[:60]
+                        parts.append(f"    - {name}: {desc}")
+                    if total > 15:
+                        parts.append(f"    ... and {total - 15} more")
+                
+                # Format single function details fully (this is what agent needs)
+                elif tool == "registry_get_function":
+                    parts.append(f"  Function details:")
+                    parts.append(f"    Name: {result_data.get('name')}")
+                    parts.append(f"    Category: {result_data.get('category')}")
+                    parts.append(f"    Description: {result_data.get('description')}")
+                    params_info = result_data.get("parameters", {})
+                    if params_info:
+                        parts.append(f"    Parameters:")
+                        for pname, pinfo in params_info.items():
+                            ptype = pinfo.get("type", "any") if isinstance(pinfo, dict) else "any"
+                            required = pinfo.get("required", False) if isinstance(pinfo, dict) else False
+                            default = pinfo.get("default") if isinstance(pinfo, dict) else None
+                            req_str = " (REQUIRED)" if required else f" (optional, default={default})"
+                            parts.append(f"      - {pname}: {ptype}{req_str}")
+                
+                else:
+                    # Generic formatting for other results
+                    result_str = json.dumps(result_data, indent=2)
+                    if len(result_str) > 1000:
+                        result_str = result_str[:1000] + "\n... (truncated)"
+                    parts.append(f"  Result: {result_str}")
             else:
                 parts.append(f"  Error: {result.get('error', 'Unknown error')}")
             parts.append("")

@@ -3,7 +3,17 @@ import json
 import random
 
 def google_receive_membership_email() -> str:
-    """Receive a membership email notification for a new member organization"""
+    """Receive a membership email notification for a new member organization
+The email includes:
+- Company name
+- Membership level (End User Supporter, Silver, Gold, Platinum, etc.)
+- Join date
+- Region (Standard, China, Korea)
+- Multiple contact types with their information:
+  - Primary contact (name, email, role)
+  - Technical contact (name, email, role)
+  - Marketing contact (name, email, role)
+    """
     
     # Random data pools
     first_names = ["Sarah", "James", "Emily", "Michael", "Jennifer", "David", "Lisa", "Robert", "Amanda", "William", "Jessica", "Daniel", "Ashley", "Christopher", "Nicole", "Andrew", "Stephanie", "Kevin", "Michelle", "Brian"]
