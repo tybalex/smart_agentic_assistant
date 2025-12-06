@@ -257,7 +257,7 @@ class ContinuousPlanningAgent:
         
         system_prompt = f"""You are a planning assistant. Your job is to create an initial plan for achieving the user's goal.
 
-AVAILABLE TOOLS (from tool registry at localhost:9999):
+AVAILABLE TOOLS (from tool registry):
 {tools_context}
 
 CRITICAL CONSTRAINTS:
@@ -490,7 +490,7 @@ Remember to identify exact text spans for each step."""
         
         system_prompt = f"""You are a continuous planning agent. Each turn, you evaluate the situation and decide the next action OR ask the user a clarification question.
 
-AVAILABLE TOOLS (from tool registry at localhost:9999):
+AVAILABLE TOOLS (from tool registry):
 {tools_context}
 
 CRITICAL CONSTRAINTS - YOU MUST FOLLOW THESE:

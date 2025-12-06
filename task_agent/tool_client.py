@@ -1,5 +1,5 @@
 """
-Client for the external Tool Registry API at localhost:9999.
+Client for the external Tool Registry API.
 Provides methods to list, search, and execute tools.
 """
 

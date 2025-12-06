@@ -13,3 +13,20 @@ services:
       retries: 3
       start_period: 5s
 
+  task-agent:
+    build:
+      context: ./task_agent
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Connect to function-registry service within docker network
+      - TOOL_REGISTRY_URL=http://function-registry:9999
+    volumes:
+      # Persist session data
+      - ./task_agent/task_data:/app/task_data
+    depends_on:
+      function-registry:
+        condition: service_healthy
+    restart: unless-stopped
