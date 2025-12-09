@@ -51,6 +51,8 @@ st.markdown("""
         padding: 1.5rem;
         margin-bottom: 1rem;
         border-left: 4px solid #667eea;
+        max-height: 600px;
+        overflow-y: auto;
     }
     
     .goal-label {
@@ -401,6 +403,13 @@ st.markdown("""
         border-left: 3px solid #6366f1;
     }
     
+    /* Plan steps container with scroll */
+    .plan-steps-container {
+        max-height: 500px;
+        overflow-y: auto;
+        margin-bottom: 1rem;
+    }
+    
     .plan-confidence {
         display: inline-block;
         padding: 0.25rem 0.5rem;
@@ -526,6 +535,8 @@ def render_highlighted_goal(goal_text: str, steps: List[PlanStep]) -> str:
 
 def render_plan_step(step: PlanStep) -> str:
     """Render a single plan step."""
+    import html
+    
     status_class = {
         StepStatus.COMPLETED: "completed",
         StepStatus.IN_PROGRESS: "in-progress",
@@ -542,19 +553,20 @@ def render_plan_step(step: PlanStep) -> str:
         StepStatus.PLANNED: "⬜"
     }.get(step.status, "⬜")
     
+    # HTML escape dynamic content to prevent breaking the HTML
+    escaped_description = html.escape(step.description)
+    
     result_html = ""
     if step.result:
         result_preview = step.result[:100] + "..." if len(step.result) > 100 else step.result
-        result_html = f'<div class="step-result">Result: {result_preview}</div>'
+        escaped_result = html.escape(result_preview)
+        result_html = f'<div class="step-result">Result: {escaped_result}</div>'
     elif step.error:
-        result_html = f'<div class="step-result" style="color: #dc2626;">Error: {step.error}</div>'
+        escaped_error = html.escape(step.error)
+        result_html = f'<div class="step-result" style="color: #dc2626;">Error: {escaped_error}</div>'
     
-    return f"""
-    <div class="plan-step {status_class}">
-        <div class="step-description">{status_icon} {step.description}</div>
-        {result_html}
-    </div>
-    """
+    # Return HTML without extra indentation/whitespace
+    return f'<div class="plan-step {status_class}"><div class="step-description">{status_icon} {escaped_description}</div>{result_html}</div>'
 
 
 def render_budget(session: Session) -> str:
@@ -804,51 +816,6 @@ def main():
             </div>
             """, unsafe_allow_html=True)
             
-            # Plan steps with progress summary
-            if steps:
-                # Calculate progress
-                progress = plan.get_progress()
-                completed = progress["completed"]
-                total = progress["total"]
-                failed = progress["failed"]
-                skipped = progress["skipped"]
-                
-                # Progress bar
-                progress_pct = ((completed + skipped) / total * 100) if total > 0 else 0
-                failed_span = f'<span style="color: #dc2626;">❌ {failed} failed</span>' if failed > 0 else ''
-                st.markdown(f"""<div style="margin-bottom: 1rem;">
-<div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #64748b; margin-bottom: 0.25rem;">
-<span>✅ {completed} completed</span>
-<span>⬜ {progress["planned"]} remaining</span>
-{failed_span}
-</div>
-<div style="height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
-<div style="height: 100%; width: {progress_pct}%; background: linear-gradient(90deg, #10b981 0%, #059669 100%); border-radius: 3px;"></div>
-</div>
-</div>""", unsafe_allow_html=True)
-                
-                # Find current step index for "NEXT" indicator
-                current_idx = None
-                for i, step in enumerate(steps):
-                    if step.status == StepStatus.IN_PROGRESS:
-                        current_idx = i
-                        break
-                    elif step.status == StepStatus.PLANNED and current_idx is None:
-                        # First planned step is next
-                        current_idx = i
-                
-                for i, step in enumerate(steps):
-                    step_html = render_plan_step(step)
-                    # Add "NEXT" indicator
-                    if i == current_idx and step.status == StepStatus.PLANNED:
-                        step_html = step_html.replace(
-                            '</div>\n    </div>',
-                            '<div style="font-size: 0.75rem; color: #f59e0b; margin-top: 0.25rem;">⬅️ NEXT</div></div>\n    </div>'
-                        )
-                    st.markdown(step_html, unsafe_allow_html=True)
-            else:
-                st.info("No plan yet.")
-            
             st.divider()
             
             # Execution section
@@ -1057,6 +1024,59 @@ def main():
                         st.session_state.turn_result = None
                         st.session_state.current_session = agent.current_session
                         st.rerun()
+            
+            st.divider()
+            
+            # Plan steps with progress summary
+            if steps:
+                # Calculate progress
+                progress = plan.get_progress()
+                completed = progress["completed"]
+                total = progress["total"]
+                failed = progress["failed"]
+                skipped = progress["skipped"]
+                
+                # Progress bar (outside scrollable container)
+                progress_pct = ((completed + skipped) / total * 100) if total > 0 else 0
+                failed_span = f'<span style="color: #dc2626;">❌ {failed} failed</span>' if failed > 0 else ''
+                st.markdown(f"""<div style="margin-bottom: 1rem;">
+<div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #64748b; margin-bottom: 0.25rem;">
+<span>✅ {completed} completed</span>
+<span>⬜ {progress["planned"]} remaining</span>
+{failed_span}
+</div>
+<div style="height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden;">
+<div style="height: 100%; width: {progress_pct}%; background: linear-gradient(90deg, #10b981 0%, #059669 100%); border-radius: 3px;"></div>
+</div>
+</div>""", unsafe_allow_html=True)
+                
+                # Find current step index for "NEXT" indicator
+                current_idx = None
+                for i, step in enumerate(steps):
+                    if step.status == StepStatus.IN_PROGRESS:
+                        current_idx = i
+                        break
+                    elif step.status == StepStatus.PLANNED and current_idx is None:
+                        # First planned step is next
+                        current_idx = i
+                
+                # Build all plan steps HTML in one string
+                all_steps_html = []
+                for i, step in enumerate(steps):
+                    step_html = render_plan_step(step)
+                    # Add "NEXT" indicator
+                    if i == current_idx and step.status == StepStatus.PLANNED:
+                        step_html = step_html.replace(
+                            '</div>\n    </div>',
+                            '<div style="font-size: 0.75rem; color: #f59e0b; margin-top: 0.25rem;">⬅️ NEXT</div></div>\n    </div>'
+                        )
+                    all_steps_html.append(step_html)
+                
+                # Render all steps in scrollable container with a single markdown call
+                full_html = '<div class="plan-steps-container">' + ''.join(all_steps_html) + '</div>'
+                st.markdown(full_html, unsafe_allow_html=True)
+            else:
+                st.info("No plan yet.")
             
             # History section
             if session.history:
