@@ -19,7 +19,14 @@ from models import (
 )
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
-from constant import DEFAULT_MODEL, DEFAULT_TOOL_REGISTRY_URL
+from constant import (
+    DEFAULT_MODEL,
+    DEFAULT_TOOL_REGISTRY_URL,
+    CLAUDE_MAX_OUTPUT_TOKENS,
+    SUMMARIZATION_TEMPERATURE,
+    TOKEN_ESTIMATION_DIVISOR,
+    MAX_CLARIFICATIONS_IN_CONTEXT
+)
 
 # Configure logging
 logging.basicConfig(
@@ -134,7 +141,7 @@ class ContinuousPlanningAgent:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=8192,
+                max_tokens=CLAUDE_MAX_OUTPUT_TOKENS,
                 temperature=temperature,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}]
@@ -736,7 +743,7 @@ REMINDER:
             return "No previous clarifications."
         
         parts = []
-        for entry in clarifications[-5:]:  # Last 5 Q&As
+        for entry in clarifications[-MAX_CLARIFICATIONS_IN_CONTEXT:]:
             parts.append(f"Q (Turn {entry.turn}): {entry.question.question}")
             if entry.question.options:
                 parts.append(f"  Options given: {entry.question.options}")
@@ -931,7 +938,7 @@ REMINDER:
         self.session_manager.increment_turn()
         
         # Estimate tokens for the result (rough estimate)
-        result_tokens = len(json.dumps(result)) // 4
+        result_tokens = len(json.dumps(result)) // TOKEN_ESTIMATION_DIVISOR
         self.session_manager.add_tokens_used(result_tokens)
         
         return ExecutionResult(
@@ -1065,7 +1072,7 @@ Respond with JSON:
 }}"""
 
         try:
-            response, tokens, input_tokens = self._call_claude(system_prompt, user_message, temperature=0.2)
+            response, tokens, input_tokens = self._call_claude(system_prompt, user_message, temperature=SUMMARIZATION_TEMPERATURE)
             self.session_manager.add_tokens_used(tokens)
             self.session_manager.update_context_tokens(input_tokens)
             

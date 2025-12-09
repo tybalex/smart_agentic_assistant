@@ -8,6 +8,12 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import uuid
 
+from constant import (
+    CONTEXT_WINDOW_LIMIT,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_MAX_TURNS
+)
+
 
 def generate_id() -> str:
     """Generate a unique ID."""
@@ -434,10 +440,10 @@ class HistorySummary:
 @dataclass
 class TokenBudget:
     """Track costs and prevent runaway execution."""
-    max_tokens: int = 10_000_000  # Maximum total tokens to use (cumulative spend)
+    max_tokens: int = DEFAULT_MAX_TOTAL_TOKENS  # Maximum total tokens to use (cumulative spend)
     used_tokens: int = 0  # Total tokens used across all API calls
     current_context_tokens: int = 0  # Size of the most recent prompt (input tokens only)
-    max_turns: int = 50  # Maximum turns allowed
+    max_turns: int = DEFAULT_MAX_TURNS  # Maximum turns allowed
     current_turn: int = 0
     
     @property
@@ -460,7 +466,7 @@ class TokenBudget:
     @property
     def context_percentage(self) -> float:
         """Percentage of context window used (fixed 200K limit)."""
-        return (self.current_context_tokens / 200000) * 100
+        return (self.current_context_tokens / CONTEXT_WINDOW_LIMIT) * 100
     
     @property
     def turn_percentage(self) -> float:
@@ -478,10 +484,10 @@ class TokenBudget:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TokenBudget":
         return cls(
-            max_tokens=data.get("max_tokens", 10_000_000),
+            max_tokens=data.get("max_tokens", DEFAULT_MAX_TOTAL_TOKENS),
             used_tokens=data.get("used_tokens", 0),
             current_context_tokens=data.get("current_context_tokens", 0),
-            max_turns=data.get("max_turns", 50),
+            max_turns=data.get("max_turns", DEFAULT_MAX_TURNS),
             current_turn=data.get("current_turn", 0)
         )
 

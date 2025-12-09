@@ -14,6 +14,7 @@ from models import (
 from agent import ContinuousPlanningAgent, create_agent
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
+from constant import CONTEXT_WINDOW_LIMIT
 
 
 # Page configuration
@@ -597,7 +598,7 @@ def render_budget(session: Session) -> str:
             </div>
         </div>
         <div style="margin-top: 0.5rem;">
-            <div class="budget-text">💬 Context: {budget.current_context_tokens:,} / 200K tokens</div>
+            <div class="budget-text">💬 Context: {budget.current_context_tokens:,} / {CONTEXT_WINDOW_LIMIT:,} tokens</div>
             <div class="budget-bar">
                 <div class="budget-fill {context_class}" style="width: {context_pct}%"></div>
             </div>
@@ -712,7 +713,7 @@ def main():
         st.markdown("### 💰 Budget Settings")
         max_turns = st.slider("Max Turns", 10, 100, 50)
         max_tokens = st.slider("Max Total Tokens (K)", 100, 10000, 10000) * 1000
-        st.caption("💬 Context tracks current prompt size (fixed 200K limit)")
+        st.caption(f"💬 Context tracks current prompt size (fixed {CONTEXT_WINDOW_LIMIT:,} limit)")
         st.caption("💰 Total tracks cumulative token spend across all turns")
         
         st.divider()
