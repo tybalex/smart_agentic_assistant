@@ -434,7 +434,7 @@ class HistorySummary:
 @dataclass
 class TokenBudget:
     """Track costs and prevent runaway execution."""
-    max_tokens: int = 150000  # Maximum tokens to use
+    max_tokens: int = 180000  # Maximum tokens to use
     used_tokens: int = 0
     max_turns: int = 50  # Maximum turns allowed
     current_turn: int = 0

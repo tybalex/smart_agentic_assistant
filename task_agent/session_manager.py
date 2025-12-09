@@ -39,7 +39,7 @@ class SessionManager:
     def create_session(
         self,
         goal_text: str,
-        max_tokens: int = 150000,
+        max_tokens: int = 180000,
         max_turns: int = 50
     ) -> Session:
         """

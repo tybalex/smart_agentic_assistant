@@ -701,7 +701,7 @@ def main():
         # Budget settings (for new sessions)
         st.markdown("### 💰 Budget Settings")
         max_turns = st.slider("Max Turns", 10, 100, 50)
-        max_tokens = st.slider("Max Tokens (K)", 50, 300, 150) * 1000
+        max_tokens = st.slider("Max Tokens (K)", 50, 200, 180) * 1000
         
         st.divider()
         

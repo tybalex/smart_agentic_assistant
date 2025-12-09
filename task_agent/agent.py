@@ -124,7 +124,7 @@ class ContinuousPlanningAgent:
         self,
         system_prompt: str,
         user_message: str,
-        temperature: float = 0.3
+        temperature: float = 0.1
     ) -> Tuple[str, int]:
         """Make a call to Claude API. Returns (response, tokens_used)."""
         logger.info(f"Calling Claude API (model: {self.model})")
@@ -134,7 +134,7 @@ class ContinuousPlanningAgent:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=8192,
                 temperature=temperature,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}]
