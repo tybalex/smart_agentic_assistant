@@ -140,11 +140,16 @@ class ContinuousPlanningAgent:
                 messages=[{"role": "user", "content": user_message}]
             )
             
-            # Estimate token usage
-            tokens_used = response.usage.input_tokens + response.usage.output_tokens
-            logger.info(f"Claude response received. Tokens used: {tokens_used}")
-            
-            return response.content[0].text, tokens_used
+            # Track token usage separately
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens
+            total_tokens = input_tokens + output_tokens
+            logger.info(f"Claude response received. Input: {input_tokens}, Output: {output_tokens}, Total: {total_tokens}")
+            all_text = system_prompt + user_message + response.content[0].text
+            print("-" * 100)
+            print(all_text)
+            print("-" * 100)
+            return response.content[0].text, total_tokens, input_tokens
         except Exception as e:
             logger.error(f"Error calling Claude API: {e}")
             raise
@@ -303,8 +308,9 @@ Only respond with JSON, no additional text."""
 Remember to identify exact text spans for each step."""
 
         try:
-            response, tokens = self._call_claude(system_prompt, user_message)
+            response, tokens, input_tokens = self._call_claude(system_prompt, user_message)
             self.session_manager.add_tokens_used(tokens)
+            self.session_manager.update_context_tokens(input_tokens)
             logger.info(f"Initial plan response received")
             
             data = self._parse_json_response(response)
@@ -596,8 +602,9 @@ REMINDER:
 - ALWAYS respond with valid JSON - never respond with plain text."""
 
         try:
-            response, tokens = self._call_claude(system_prompt, user_message)
+            response, tokens, input_tokens = self._call_claude(system_prompt, user_message)
             self.session_manager.add_tokens_used(tokens)
+            self.session_manager.update_context_tokens(input_tokens)
             logger.info("Evaluation response received")
             
             data = self._parse_json_response(response)
@@ -1058,8 +1065,9 @@ Respond with JSON:
 }}"""
 
         try:
-            response, tokens = self._call_claude(system_prompt, user_message, temperature=0.2)
+            response, tokens, input_tokens = self._call_claude(system_prompt, user_message, temperature=0.2)
             self.session_manager.add_tokens_used(tokens)
+            self.session_manager.update_context_tokens(input_tokens)
             
             data = self._parse_json_response(response)
             

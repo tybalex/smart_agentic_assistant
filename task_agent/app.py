@@ -573,7 +573,11 @@ def render_budget(session: Session) -> str:
     """Render the budget indicators."""
     budget = session.budget
     
-    # Token budget
+    # Context window (fixed 200K limit)
+    context_pct = budget.context_percentage
+    context_class = "safe" if context_pct < 60 else ("warning" if context_pct < 85 else "danger")
+    
+    # Total token budget
     token_pct = budget.token_percentage
     token_class = "safe" if token_pct < 60 else ("warning" if token_pct < 85 else "danger")
     
@@ -593,7 +597,13 @@ def render_budget(session: Session) -> str:
             </div>
         </div>
         <div style="margin-top: 0.5rem;">
-            <div class="budget-text">Tokens: {budget.used_tokens:,}/{budget.max_tokens:,}</div>
+            <div class="budget-text">💬 Context: {budget.current_context_tokens:,} / 200K tokens</div>
+            <div class="budget-bar">
+                <div class="budget-fill {context_class}" style="width: {context_pct}%"></div>
+            </div>
+        </div>
+        <div style="margin-top: 0.5rem;">
+            <div class="budget-text">💰 Total Used: {budget.used_tokens:,} / {budget.max_tokens:,} tokens</div>
             <div class="budget-bar">
                 <div class="budget-fill {token_class}" style="width: {token_pct}%"></div>
             </div>
@@ -701,7 +711,9 @@ def main():
         # Budget settings (for new sessions)
         st.markdown("### 💰 Budget Settings")
         max_turns = st.slider("Max Turns", 10, 100, 50)
-        max_tokens = st.slider("Max Tokens (K)", 50, 200, 180) * 1000
+        max_tokens = st.slider("Max Total Tokens (K)", 100, 10000, 10000) * 1000
+        st.caption("💬 Context tracks current prompt size (fixed 200K limit)")
+        st.caption("💰 Total tracks cumulative token spend across all turns")
         
         st.divider()
         

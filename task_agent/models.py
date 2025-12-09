@@ -434,8 +434,9 @@ class HistorySummary:
 @dataclass
 class TokenBudget:
     """Track costs and prevent runaway execution."""
-    max_tokens: int = 180000  # Maximum tokens to use
-    used_tokens: int = 0
+    max_tokens: int = 10_000_000  # Maximum total tokens to use (cumulative spend)
+    used_tokens: int = 0  # Total tokens used across all API calls
+    current_context_tokens: int = 0  # Size of the most recent prompt (input tokens only)
     max_turns: int = 50  # Maximum turns allowed
     current_turn: int = 0
     
@@ -453,7 +454,13 @@ class TokenBudget:
     
     @property
     def token_percentage(self) -> float:
+        """Percentage of total token budget used."""
         return (self.used_tokens / self.max_tokens) * 100 if self.max_tokens > 0 else 0
+    
+    @property
+    def context_percentage(self) -> float:
+        """Percentage of context window used (fixed 200K limit)."""
+        return (self.current_context_tokens / 200000) * 100
     
     @property
     def turn_percentage(self) -> float:
@@ -463,6 +470,7 @@ class TokenBudget:
         return {
             "max_tokens": self.max_tokens,
             "used_tokens": self.used_tokens,
+            "current_context_tokens": self.current_context_tokens,
             "max_turns": self.max_turns,
             "current_turn": self.current_turn
         }
@@ -470,9 +478,10 @@ class TokenBudget:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TokenBudget":
         return cls(
-            max_tokens=data.get("max_tokens", 50000),
+            max_tokens=data.get("max_tokens", 10_000_000),
             used_tokens=data.get("used_tokens", 0),
-            max_turns=data.get("max_turns", 20),
+            current_context_tokens=data.get("current_context_tokens", 0),
+            max_turns=data.get("max_turns", 50),
             current_turn=data.get("current_turn", 0)
         )
 

@@ -335,6 +335,14 @@ class SessionManager:
         self.save_session()
         return self.current_session.budget.used_tokens
     
+    def update_context_tokens(self, context_tokens: int) -> None:
+        """Update the current context size (most recent prompt's input tokens)."""
+        if not self.current_session:
+            return
+        
+        self.current_session.budget.current_context_tokens = context_tokens
+        self.save_session()
+    
     def is_budget_exceeded(self) -> bool:
         """Check if the budget has been exceeded."""
         if not self.current_session:
