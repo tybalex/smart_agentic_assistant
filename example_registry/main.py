@@ -120,6 +120,21 @@ for func_name, func_info in DISCOVERED_FUNCTIONS.items():
                 params = request.dict(exclude_none=True)
                 result = fn(**params)
                 
+                # Try to parse result as JSON to check for inner success field
+                try:
+                    import json
+                    result_dict = json.loads(result)
+                    if isinstance(result_dict, dict) and "success" in result_dict:
+                        # Use the inner success status
+                        return {
+                            "function_name": fn_name,
+                            "result": result,
+                            "success": result_dict["success"]
+                        }
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                
+                # Default to success if no inner success field
                 return {
                     "function_name": fn_name,
                     "result": result,

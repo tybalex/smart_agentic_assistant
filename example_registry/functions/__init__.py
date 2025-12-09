@@ -112,9 +112,10 @@ from .airtable import (
 
 # Web
 from .web import (
-    web_scrape_page,
-    web_screenshot,
-    web_fill_form
+    # firecrawl_scrape,  # TODO: cleanup needed
+    firecrawl_search,
+    tavily_search,
+    # tavily_extract,  # TODO: cleanup needed
 )
 
 # Payment (Stripe)
@@ -231,9 +232,10 @@ FUNCTION_MAP = {
     "airtable_update_record": airtable_update_record,
     
     # Web
-    "web_scrape_page": web_scrape_page,
-    "web_screenshot": web_screenshot,
-    "web_fill_form": web_fill_form,
+    # "firecrawl_scrape": firecrawl_scrape,  # TODO: cleanup needed
+    "firecrawl_search": firecrawl_search,
+    "tavily_search": tavily_search,
+    # "tavily_extract": tavily_extract,  # TODO: cleanup needed
     
     # Payment
     "stripe_create_charge": stripe_create_charge,
@@ -354,9 +356,10 @@ __all__ = [
     "airtable_update_record",
     
     # Web
-    "web_scrape_page",
-    "web_screenshot",
-    "web_fill_form",
+    # "firecrawl_scrape",  # TODO: cleanup needed
+    "firecrawl_search",
+    "tavily_search",
+    # "tavily_extract",  # TODO: cleanup needed
     
     # Payment
     "stripe_create_charge",

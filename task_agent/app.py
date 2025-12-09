@@ -5,6 +5,7 @@ Provides goal input, plan visualization, state tracking, and execution controls.
 
 import streamlit as st
 import json
+import html
 from typing import Optional, Dict, Any, List
 
 from models import (
@@ -71,47 +72,6 @@ st.markdown("""
         line-height: 1.8;
         color: #e2e8f0;
         white-space: pre-wrap;
-    }
-    
-    /* Text highlighting */
-    .span-completed {
-        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-        color: white;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-weight: 500;
-    }
-    
-    .span-current {
-        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-        color: white;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-weight: 600;
-        animation: pulse 2s infinite;
-    }
-    
-    .span-pending {
-        background: rgba(99, 102, 241, 0.3);
-        color: #a5b4fc;
-        padding: 2px 6px;
-        border-radius: 4px;
-    }
-    
-    .span-failed {
-        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-        color: white;
-        padding: 2px 6px;
-        border-radius: 4px;
-        text-decoration: line-through;
-    }
-    
-    .span-skipped {
-        background: #4b5563;
-        color: #9ca3af;
-        padding: 2px 6px;
-        border-radius: 4px;
-        text-decoration: line-through;
     }
     
     @keyframes pulse {
@@ -481,59 +441,6 @@ def get_agent() -> ContinuousPlanningAgent:
     return st.session_state.agent
 
 
-def render_highlighted_goal(goal_text: str, steps: List[PlanStep]) -> str:
-    """Render the goal text with highlighting based on step status."""
-    if not steps:
-        return f'<div class="goal-text">{goal_text}</div>'
-    
-    # Build spans with their status
-    spans = []
-    for step in steps:
-        if step.text_span:
-            spans.append({
-                "start": step.text_span.start,
-                "end": step.text_span.end,
-                "status": step.status,
-                "step_id": step.id
-            })
-    
-    # Sort by start position
-    spans.sort(key=lambda x: x["start"])
-    
-    # Build highlighted HTML
-    result = []
-    last_end = 0
-    
-    for span in spans:
-        # Add unhighlighted text before this span
-        if span["start"] > last_end:
-            result.append(goal_text[last_end:span["start"]])
-        
-        # Determine CSS class
-        status = span["status"]
-        if status == StepStatus.COMPLETED:
-            css_class = "span-completed"
-        elif status == StepStatus.IN_PROGRESS:
-            css_class = "span-current"
-        elif status == StepStatus.FAILED:
-            css_class = "span-failed"
-        elif status == StepStatus.SKIPPED:
-            css_class = "span-skipped"
-        else:
-            css_class = "span-pending"
-        
-        span_text = goal_text[span["start"]:span["end"]]
-        result.append(f'<span class="{css_class}">{span_text}</span>')
-        last_end = span["end"]
-    
-    # Add remaining text
-    if last_end < len(goal_text):
-        result.append(goal_text[last_end:])
-    
-    highlighted = "".join(result)
-    return f'<div class="goal-text">{highlighted}</div>'
-
-
 def render_plan_step(step: PlanStep) -> str:
     """Render a single plan step."""
     import html
@@ -717,18 +624,6 @@ def main():
         st.caption("💰 Total tracks cumulative token spend across all turns")
         
         st.divider()
-        
-        # Legend
-        st.markdown("### 🎨 Legend")
-        st.markdown("""
-        <div style="font-size: 0.875rem;">
-            <span class="span-completed">Completed</span><br><br>
-            <span class="span-current">In Progress</span><br><br>
-            <span class="span-pending">Planned</span><br><br>
-            <span class="span-failed">Failed</span><br><br>
-            <span class="span-skipped">Skipped</span>
-        </div>
-        """, unsafe_allow_html=True)
     
     # Main content
     agent = get_agent()
@@ -742,7 +637,8 @@ def main():
             "What do you want to accomplish?",
             value=st.session_state.input_text,
             height=150,
-            placeholder="Describe your goal...\n\nExample:\nI need to search for weather in San Francisco, calculate the wind chill factor, and summarize the results."
+            placeholder="Describe your goal...\n\nExample:\nI need to search for weather in San Francisco, calculate the wind chill factor, and summarize the results.",
+            key="goal_input"
         )
         
         if st.button("🚀 Start Planning", type="primary", use_container_width=True):
@@ -754,7 +650,7 @@ def main():
                         max_turns=max_turns
                     )
                     st.session_state.current_session = session
-                    st.session_state.input_text = input_text
+                    st.session_state.input_text = ""  # Clear after starting session
                 st.rerun()
             else:
                 st.warning("Please enter a goal first.")
@@ -766,12 +662,10 @@ def main():
         with col1:
             # Goal section
             st.markdown("### 🎯 Goal")
-            steps = session.plan.steps
-            highlighted = render_highlighted_goal(session.goal.original_text, steps)
             st.markdown(f"""
             <div class="goal-box">
                 <div class="goal-label">Your Objective</div>
-                {highlighted}
+                <div class="goal-text">{html.escape(session.goal.original_text)}</div>
             </div>
             """, unsafe_allow_html=True)
             
@@ -840,6 +734,7 @@ def main():
                 if st.button("🔄 New Session"):
                     st.session_state.current_session = None
                     st.session_state.turn_result = None
+                    st.session_state.input_text = ""
                     st.rerun()
             
             elif session.status == SessionStatus.BUDGET_EXCEEDED:
@@ -847,6 +742,7 @@ def main():
                 if st.button("🔄 New Session"):
                     st.session_state.current_session = None
                     st.session_state.turn_result = None
+                    st.session_state.input_text = ""
                     st.rerun()
             
             elif session.status == SessionStatus.ABORTED:
@@ -854,6 +750,7 @@ def main():
                 if st.button("🔄 New Session"):
                     st.session_state.current_session = None
                     st.session_state.turn_result = None
+                    st.session_state.input_text = ""
                     st.rerun()
             
             else:
@@ -1041,6 +938,7 @@ def main():
             st.divider()
             
             # Plan steps with progress summary
+            steps = plan.steps
             if steps:
                 # Calculate progress
                 progress = plan.get_progress()
@@ -1146,6 +1044,7 @@ def main():
         if st.button("🔄 Start New Session", use_container_width=True):
             st.session_state.current_session = None
             st.session_state.turn_result = None
+            st.session_state.input_text = ""
             agent.session_manager.current_session = None
             st.rerun()
 
