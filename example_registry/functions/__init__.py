@@ -34,7 +34,9 @@ from .member_desk import (
 # Salesforce
 from .salesforce import (
     salesforce_query,
-    salesforce_create
+    salesforce_create,
+    salesforce_describe_object,
+    salesforce_list_objects
 )
 
 # Slack
@@ -162,6 +164,8 @@ FUNCTION_MAP = {
     # Salesforce
     "salesforce_query": salesforce_query,
     "salesforce_create": salesforce_create,
+    "salesforce_describe_object": salesforce_describe_object,
+    "salesforce_list_objects": salesforce_list_objects,
     
     # Mailing List
     "get_mailing_list": get_mailing_list,
@@ -299,6 +303,8 @@ __all__ = [
     # Salesforce
     "salesforce_query",
     "salesforce_create",
+    "salesforce_describe_object",
+    "salesforce_list_objects",
     
     # Slack
     "slack_invite_to_channel",

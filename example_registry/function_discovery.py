@@ -78,7 +78,24 @@ def get_function_metadata(func: Callable) -> Dict[str, Any]:
     
     # Get description from docstring
     doc = inspect.getdoc(func) or f"Execute {func.__name__}"
-    description = doc.split('\n')[0]  # First line
+    
+    # Extract everything before Args/Returns/etc sections
+    lines = doc.split('\n')
+    description_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Stop at section headers (these start lines, often followed by :)
+        if stripped and (
+            stripped.upper().startswith(('ARGS:', 'ARGUMENTS:', 'PARAMETERS:', 'PARAMS:')) or
+            stripped.upper().startswith(('RETURNS:', 'RETURN:', 'YIELDS:', 'YIELD:')) or
+            stripped.upper().startswith(('RAISES:', 'RAISE:', 'EXCEPT:', 'EXCEPTIONS:')) or
+            stripped.upper().startswith(('EXAMPLES:', 'EXAMPLE:', 'NOTE:', 'NOTES:', 'WARNING:', 'WARNINGS:'))
+        ):
+            break
+        if stripped:  # Only add non-empty lines
+            description_lines.append(stripped)
+    
+    description = ' '.join(description_lines) if description_lines else lines[0]
     
     return {
         'name': func.__name__,
