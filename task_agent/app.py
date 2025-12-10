@@ -53,7 +53,7 @@ st.markdown("""
         padding: 1.5rem;
         margin-bottom: 1rem;
         border-left: 4px solid #667eea;
-        max-height: 600px;
+        max-height: 400px;
         overflow-y: auto;
     }
     
@@ -692,41 +692,13 @@ def main():
             st.markdown(render_budget(session), unsafe_allow_html=True)
         
         with col2:
-            # Turn indicator
+            # Execution section with turn counter (at top for easy access)
             st.markdown(f"""
-            <div class="turn-indicator">
-                🔄 Turn {session.budget.current_turn} / {session.budget.max_turns}
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 style="margin: 0;">🎮 Execution</h3>
+                <span style="color: #64748b; font-size: 1.3rem; font-weight: 600;">Turn {session.budget.current_turn}/{session.budget.max_turns}</span>
             </div>
             """, unsafe_allow_html=True)
-            
-            # Plan section with header
-            plan = session.plan
-            confidence_class = "high" if plan.confidence >= 0.7 else ("medium" if plan.confidence >= 0.4 else "low")
-            confidence_label = "High" if plan.confidence >= 0.7 else ("Medium" if plan.confidence >= 0.4 else "Low")
-            
-            # Check if we just updated the plan (turn result exists)
-            plan_updated = st.session_state.turn_result is not None
-            updated_badge = '<span class="plan-updated-badge">UPDATED</span>' if plan_updated else ''
-            
-            st.markdown(f"""
-            <div class="plan-header">
-                <div class="plan-title">
-                    📋 Current Plan {updated_badge}
-                    <span class="plan-confidence confidence-{confidence_class}">
-                        {confidence_label} Confidence ({plan.confidence:.0%})
-                    </span>
-                </div>
-                <div class="plan-meta">
-                    {len(plan.steps)} steps • Last updated: {plan.last_updated.strftime("%H:%M:%S") if plan.last_updated else "N/A"}
-                </div>
-                {f'<div class="plan-reasoning">💭 {plan.reasoning}</div>' if plan.reasoning else ''}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.divider()
-            
-            # Execution section
-            st.markdown("### 🎮 Execution")
             
             # Check session status
             if session.status == SessionStatus.COMPLETED:
@@ -936,6 +908,30 @@ def main():
                         st.rerun()
             
             st.divider()
+            
+            # Plan section with header
+            plan = session.plan
+            confidence_class = "high" if plan.confidence >= 0.7 else ("medium" if plan.confidence >= 0.4 else "low")
+            confidence_label = "High" if plan.confidence >= 0.7 else ("Medium" if plan.confidence >= 0.4 else "Low")
+            
+            # Check if we just updated the plan (turn result exists)
+            plan_updated = st.session_state.turn_result is not None
+            updated_badge = '<span class="plan-updated-badge">UPDATED</span>' if plan_updated else ''
+            
+            st.markdown(f"""
+            <div class="plan-header">
+                <div class="plan-title">
+                    📋 Upcoming Tasks {updated_badge}
+                    <span class="plan-confidence confidence-{confidence_class}">
+                        {confidence_label} Confidence ({plan.confidence:.0%})
+                    </span>
+                </div>
+                <div class="plan-meta">
+                    {len(plan.steps)} steps • Last updated: {plan.last_updated.strftime("%H:%M:%S") if plan.last_updated else "N/A"}
+                </div>
+                {f'<div class="plan-reasoning">💭 {plan.reasoning}</div>' if plan.reasoning else ''}
+            </div>
+            """, unsafe_allow_html=True)
             
             # Plan steps with progress summary
             steps = plan.steps
