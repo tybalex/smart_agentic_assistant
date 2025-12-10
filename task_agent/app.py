@@ -845,17 +845,26 @@ def main():
                         # Answer input
                         if question.options:
                             # If options provided, show as radio buttons
-                            answer = st.radio(
+                            selected_option = st.radio(
                                 "Select your answer:",
                                 options=question.options + ["Other (type below)"],
                                 key="clarification_radio"
                             )
-                            if answer == "Other (type below)":
-                                answer = st.text_input(
-                                    "Your answer:",
-                                    key="clarification_text_other",
-                                    placeholder="Type your answer..."
-                                )
+                            
+                            # Always show text input for additional details
+                            text_placeholder = "Type your answer..." if selected_option == "Other (type below)" else "Provide additional details for your selected option..."
+                            text_input = st.text_input(
+                                "Additional details:" if selected_option != "Other (type below)" else "Your answer:",
+                                key="clarification_text_with_options",
+                                placeholder=text_placeholder
+                            )
+                            
+                            # Combine selection with text if provided
+                            if selected_option == "Other (type below)":
+                                answer = text_input
+                            else:
+                                # If text is provided, combine it with the selected option
+                                answer = f"{selected_option}\n{text_input}" if text_input else selected_option
                         else:
                             # Free text input
                             answer = st.text_area(
