@@ -724,7 +724,7 @@ REMINDER:
         
         # Include summaries of older history
         for summary in summaries:
-            parts.append(f"[Summary of turns 1-{summary.turns_covered}]")
+            parts.append(f"[Summary of turns {summary.start_turn}-{summary.end_turn}]")
             parts.append(summary.summary_text)
             parts.append("")
         
@@ -1062,6 +1062,10 @@ REMINDER:
         if not entries_to_summarize:
             return
         
+        # Calculate the turn range for this summary
+        start_turn = entries_to_summarize[0].turn
+        end_turn = entries_to_summarize[-1].turn
+        
         # Format for summarization
         history_text = []
         for entry in entries_to_summarize:
@@ -1098,6 +1102,8 @@ Respond with JSON:
             summary = HistorySummary(
                 summary_text=data.get("summary", "Previous actions completed."),
                 turns_covered=len(entries_to_summarize),
+                start_turn=start_turn,
+                end_turn=end_turn,
                 key_results=data.get("key_results", []),
                 created_at=datetime.now()
             )

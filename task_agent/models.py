@@ -448,6 +448,8 @@ class HistorySummary:
     """Summarized history when full history gets too long."""
     summary_text: str
     turns_covered: int  # How many turns this summary covers
+    start_turn: int = 1  # First turn in this summary
+    end_turn: int = 1  # Last turn in this summary
     key_results: List[str] = field(default_factory=list)  # Important outcomes
     created_at: datetime = field(default_factory=datetime.now)
     
@@ -455,6 +457,8 @@ class HistorySummary:
         return {
             "summary_text": self.summary_text,
             "turns_covered": self.turns_covered,
+            "start_turn": self.start_turn,
+            "end_turn": self.end_turn,
             "key_results": self.key_results,
             "created_at": self.created_at.isoformat()
         }
@@ -464,6 +468,8 @@ class HistorySummary:
         return cls(
             summary_text=data["summary_text"],
             turns_covered=data["turns_covered"],
+            start_turn=data.get("start_turn", 1),
+            end_turn=data.get("end_turn", data["turns_covered"]),
             key_results=data.get("key_results", []),
             created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now()
         )
