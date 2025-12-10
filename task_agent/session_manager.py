@@ -221,6 +221,18 @@ class SessionManager:
                     step.tool_used = tool_used
                 if tool_params:
                     step.tool_params = tool_params
+                
+                # Record completed steps in immutable log
+                if status == StepStatus.COMPLETED:
+                    from models import CompletedStep
+                    completed_step = CompletedStep(
+                        step_id=step.id,
+                        description=step.description,
+                        turn=self.current_session.budget.current_turn,
+                        result_summary=result[:200] if result else "Success"
+                    )
+                    self.current_session.completed_steps.append(completed_step)
+                
                 self.save_session()
                 return step
         return None

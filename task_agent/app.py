@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, List
 
 from models import (
     Session, StepStatus, PlanStep, Action, SessionStatus, Plan,
-    ClarificationQuestion, ClarificationAnswer
+    ClarificationQuestion, ClarificationAnswer, CompletedStep
 )
 from agent import ContinuousPlanningAgent, create_agent
 from session_manager import SessionManager
@@ -988,6 +988,20 @@ def main():
                 st.markdown(full_html, unsafe_allow_html=True)
             else:
                 st.info("No plan yet.")
+            
+            # Completed steps section
+            if session.completed_steps:
+                st.divider()
+                st.markdown("### ✅ Completed Steps")
+                
+                for cs in reversed(session.completed_steps[-5:]):  # Show last 5
+                    st.markdown(f"""
+                    <div class="history-entry" style="border-left: 3px solid #10b981;">
+                        <div class="history-turn">Turn {cs.turn}</div>
+                        <div style="color: #059669; font-weight: 500;">{html.escape(cs.description)}</div>
+                        <div style="color: #64748b; margin-top: 0.25rem; font-size: 0.875rem;">✓ {html.escape(cs.result_summary)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
             
             # History section
             if session.history:

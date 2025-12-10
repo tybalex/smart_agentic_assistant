@@ -15,7 +15,7 @@ from models import (
     HistoryEntry, HistorySummary, TokenBudget, TurnResult, ExecutionResult,
     SessionStatus, StepStatus, TextSpan, generate_id,
     ClarificationQuestion, ClarificationAnswer, ClarificationEntry,
-    RejectionFeedback, RejectionEntry
+    RejectionFeedback, RejectionEntry, CompletedStep
 )
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
@@ -499,6 +499,9 @@ Remember to identify exact text spans for each step."""
         clarifications_str = self._format_clarifications(session.clarifications)
         rejections_str = self._format_rejections(session.rejections)
         
+        # Format completed steps log
+        completed_steps_str = self._format_completed_steps(session.completed_steps)
+        
         # Format registry discovery results (from auto-executed calls this turn)
         registry_str = self._format_registry_results(registry_results or [])
         
@@ -553,6 +556,9 @@ Blockers: {json.dumps(session.state.blockers)}
 
 CURRENT PLAN:
 {plan_str}
+
+COMPLETED STEPS LOG (immutable record - preserved even if steps removed from plan):
+{completed_steps_str}
 
 EXECUTION HISTORY:
 {history_str}
@@ -728,8 +734,6 @@ REMINDER:
             parts.append(f"  Params: {json.dumps(entry.action.parameters)}")
             if entry.result.get("success"):
                 result_str = json.dumps(entry.result.get("result", {}))
-                if len(result_str) > 200:
-                    result_str = result_str[:200] + "..."
                 parts.append(f"  Result: {result_str}")
             else:
                 parts.append(f"  Error: {entry.result.get('error', 'Unknown')}")
@@ -762,6 +766,19 @@ REMINDER:
             action = entry.rejection.rejected_action
             parts.append(f"Turn {entry.turn}: User REJECTED action {action.tool_category}/{action.tool_name}")
             parts.append(f"  User's feedback: {entry.rejection.feedback}")
+            parts.append("")
+        
+        return "\n".join(parts)
+    
+    def _format_completed_steps(self, completed_steps: List['CompletedStep']) -> str:
+        """Format completed steps log for prompt."""
+        if not completed_steps:
+            return "No steps completed yet."
+        
+        parts = []
+        for cs in completed_steps:
+            parts.append(f"[{cs.step_id}] Completed at Turn {cs.turn}: {cs.description}")
+            parts.append(f"  Outcome: {cs.result_summary}")
             parts.append("")
         
         return "\n".join(parts)

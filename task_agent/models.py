@@ -201,6 +201,38 @@ class Plan:
 
 
 @dataclass
+class CompletedStep:
+    """
+    Immutable record of a completed plan step.
+    Preserved even if the step is removed from the active plan.
+    """
+    step_id: str  # Original PlanStep ID
+    description: str  # Snapshot of step description when completed
+    turn: int  # When it was completed
+    result_summary: str  # Brief summary of the outcome
+    completed_at: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step_id": self.step_id,
+            "description": self.description,
+            "turn": self.turn,
+            "result_summary": self.result_summary,
+            "completed_at": self.completed_at.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CompletedStep":
+        return cls(
+            step_id=data["step_id"],
+            description=data["description"],
+            turn=data["turn"],
+            result_summary=data["result_summary"],
+            completed_at=datetime.fromisoformat(data["completed_at"])
+        )
+
+
+@dataclass
 class AgentState:
     """
     Agent's current understanding - updated each turn.
@@ -503,6 +535,7 @@ class Session:
     history_summaries: List[HistorySummary] = field(default_factory=list)  # Compressed old history
     clarifications: List[ClarificationEntry] = field(default_factory=list)  # Q&A history
     rejections: List[RejectionEntry] = field(default_factory=list)  # Rejected actions with feedback
+    completed_steps: List[CompletedStep] = field(default_factory=list)  # Immutable log of completed work
     budget: TokenBudget = field(default_factory=TokenBudget)
     status: SessionStatus = SessionStatus.ACTIVE
     agent_notes: List[str] = field(default_factory=list)  # Agent observations
@@ -531,6 +564,7 @@ class Session:
             "history_summaries": [hs.to_dict() for hs in self.history_summaries],
             "clarifications": [c.to_dict() for c in self.clarifications],
             "rejections": [r.to_dict() for r in self.rejections],
+            "completed_steps": [cs.to_dict() for cs in self.completed_steps],
             "budget": self.budget.to_dict(),
             "status": self.status.value,
             "agent_notes": self.agent_notes,
@@ -549,6 +583,7 @@ class Session:
             history_summaries=[HistorySummary.from_dict(hs) for hs in data.get("history_summaries", [])],
             clarifications=[ClarificationEntry.from_dict(c) for c in data.get("clarifications", [])],
             rejections=[RejectionEntry.from_dict(r) for r in data.get("rejections", [])],
+            completed_steps=[CompletedStep.from_dict(cs) for cs in data.get("completed_steps", [])],
             budget=TokenBudget.from_dict(data.get("budget", {})),
             status=SessionStatus(data.get("status", "active")),
             agent_notes=data.get("agent_notes", []),
