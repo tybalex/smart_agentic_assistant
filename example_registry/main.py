@@ -35,11 +35,11 @@ async def root():
             "Full OpenAPI documentation"
         ],
         "endpoints": {
-            "list_all": "/functions",
+            "list_all": "/functions?limit={limit}&offset={offset}",
             "get_function": "/functions/{function_name}",
-            "by_category": "/functions/category/{category}",
+            "by_category": "/functions/category/{category}?limit={limit}&offset={offset}",
             "categories": "/categories",
-            "search": "/functions/search?q={query}",
+            "search": "/search?q={query}&limit={limit}&offset={offset}",
             "execute": "/{category}/{function_name}"
         },
         "docs": "/docs"
@@ -47,28 +47,87 @@ async def root():
 
 
 @app.get("/functions")
-async def list_functions():
-    """List all available functions"""
+async def list_functions(limit: int = None, offset: int = 0):
+    """List all available functions with pagination
+    
+    Args:
+        limit: Maximum number of results to return (default: all)
+        offset: Number of results to skip for pagination (default: 0). Use offset=10 to get results 11-20, offset=20 for 21-30, etc.
+    """
+    all_funcs = get_all_functions()
+    total = len(all_funcs)
+    
+    # Apply pagination
+    if limit is not None:
+        funcs = all_funcs[offset:offset + limit]
+    else:
+        funcs = all_funcs[offset:] if offset > 0 else all_funcs
+    
     return {
-        "functions": get_all_functions(),
-        "total": len(DISCOVERED_FUNCTIONS)
+        "functions": funcs,
+        "total": total,
+        "returned": len(funcs),
+        "offset": offset,
+        "limit": limit
     }
 
 
 @app.get("/search")
-async def search_functions_endpoint(q: str):
-    """Search functions by name or description"""
-    results = search_functions(q)
-    return {"results": results, "total": len(results), "query": q}
+async def search_functions_endpoint(q: str, limit: int = None, offset: int = 0):
+    """Search functions by name or description with pagination
+    
+    Args:
+        q: Search query (searches in function name and description)
+        limit: Maximum number of results to return (default: all)
+        offset: Number of results to skip for pagination (default: 0). Use offset=10 to screen through results 11-20, offset=20 for 21-30, etc.
+    """
+    all_results = search_functions(q)
+    total = len(all_results)
+    
+    # Apply pagination
+    if limit is not None:
+        results = all_results[offset:offset + limit]
+    else:
+        results = all_results[offset:] if offset > 0 else all_results
+    
+    return {
+        "results": results,
+        "total": total,
+        "returned": len(results),
+        "offset": offset,
+        "limit": limit,
+        "query": q
+    }
 
 
 @app.get("/functions/category/{category}")
-async def get_category_functions(category: str):
-    """Get all functions in a category"""
-    functions = get_functions_by_category(category)
-    if not functions:
+async def get_category_functions(category: str, limit: int = None, offset: int = 0):
+    """Get all functions in a category with pagination
+    
+    Args:
+        category: Category name to filter by
+        limit: Maximum number of results to return (default: all)
+        offset: Number of results to skip for pagination (default: 0). Use offset=10 to screen through results 11-20, offset=20 for 21-30, etc.
+    """
+    all_funcs = get_functions_by_category(category)
+    if not all_funcs:
         raise HTTPException(404, f"No functions found in category '{category}'")
-    return {"functions": functions, "total": len(functions)}
+    
+    total = len(all_funcs)
+    
+    # Apply pagination
+    if limit is not None:
+        funcs = all_funcs[offset:offset + limit]
+    else:
+        funcs = all_funcs[offset:] if offset > 0 else all_funcs
+    
+    return {
+        "functions": funcs,
+        "total": total,
+        "returned": len(funcs),
+        "offset": offset,
+        "limit": limit
+    }
 
 
 @app.get("/functions/{function_name}")
