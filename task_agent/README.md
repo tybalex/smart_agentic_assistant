@@ -8,7 +8,7 @@ An intelligent task execution system using **continuous re-planning**. Instead o
 - **Goal Tracking**: Original objective always visible, never forgotten
 - **State Visualization**: See the agent's current understanding of the situation
 - **Dynamic Plan Updates**: Plan adapts as execution progresses
-- **Token/Turn Budget**: Prevents runaway execution with configurable limits
+- **Token Budget**: Prevents runaway execution with configurable token limits
 - **History Summarization**: Manages context length for long-running sessions
 - **Text Highlighting**: Visual mapping of plan steps to original goal text
 - **Session Persistence**: Save and resume sessions
@@ -65,7 +65,7 @@ Session:
   - state: AgentState             # Agent's current understanding
   - plan: Plan                    # Current plan (updated each turn)
   - history: List[HistoryEntry]   # Execution history
-  - budget: TokenBudget           # Token/turn limits
+  - budget: TokenBudget           # Token usage tracking
   - status: SessionStatus         # active/completed/aborted/budget_exceeded
 ```
 
@@ -123,7 +123,7 @@ Opens at `http://localhost:8501`
 4. **Watch Progress**: 
    - Goal text highlights show which parts are completed
    - State summary shows agent's understanding
-   - Budget indicators show remaining turns/tokens
+   - Token budget indicator shows remaining tokens
 
 ### Example Session
 
@@ -148,8 +148,8 @@ Opens at `http://localhost:8501`
 ### Budget Settings
 
 In the UI sidebar:
-- **Max Turns**: 5-50 (default: 20)
-- **Max Tokens**: 10K-100K (default: 50K)
+- **Max Tokens**: 100K-10M (default: 10M)
+  - The agent runs for as many turns as needed, only limited by token budget
 
 ### In-Code Configuration
 
