@@ -239,7 +239,7 @@ class ContinuousPlanningAgent:
         self,
         goal_text: str,
         max_tokens: int = 50000,
-        max_turns: int = 20
+        max_turns: int = 999  # Not enforced, kept for backward compatibility
     ) -> Session:
         """
         Start a new session with the user's goal.

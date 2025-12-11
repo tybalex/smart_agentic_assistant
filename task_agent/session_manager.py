@@ -40,7 +40,7 @@ class SessionManager:
         self,
         goal_text: str,
         max_tokens: int = 180000,
-        max_turns: int = 50
+        max_turns: int = 999  # Not enforced, kept for backward compatibility
     ) -> Session:
         """
         Create a new session from user's goal text.

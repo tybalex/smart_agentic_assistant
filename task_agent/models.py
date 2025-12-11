@@ -520,7 +520,8 @@ class TokenBudget:
     
     @property
     def exceeded(self) -> bool:
-        return self.used_tokens >= self.max_tokens or self.current_turn >= self.max_turns
+        # Only check token budget, not turn count - agent can run as many turns as needed
+        return self.used_tokens >= self.max_tokens
     
     @property
     def token_percentage(self) -> float:

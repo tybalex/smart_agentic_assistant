@@ -489,20 +489,13 @@ def render_budget(session: Session) -> str:
     token_pct = budget.token_percentage
     token_class = "safe" if token_pct < 60 else ("warning" if token_pct < 85 else "danger")
     
-    # Turn budget
-    turn_pct = budget.turn_percentage
-    turn_class = "safe" if turn_pct < 60 else ("warning" if turn_pct < 85 else "danger")
-    
     return f"""
     <div class="budget-container">
         <div class="budget-text">
             <strong>💰 Budget</strong>
         </div>
         <div style="margin-top: 0.5rem;">
-            <div class="budget-text">Turns: {budget.current_turn}/{budget.max_turns}</div>
-            <div class="budget-bar">
-                <div class="budget-fill {turn_class}" style="width: {turn_pct}%"></div>
-            </div>
+            <div class="budget-text">Turns: {budget.current_turn}</div>
         </div>
         <div style="margin-top: 0.5rem;">
             <div class="budget-text">💬 Context: {budget.current_context_tokens:,} / {CONTEXT_WINDOW_LIMIT:,} tokens</div>
@@ -618,7 +611,6 @@ def main():
         
         # Budget settings (for new sessions)
         st.markdown("### 💰 Budget Settings")
-        max_turns = st.slider("Max Turns", 10, 100, 50)
         max_tokens = st.slider("Max Total Tokens (K)", 100, 10000, 10000) * 1000
         st.caption(f"💬 Context tracks current prompt size (fixed {CONTEXT_WINDOW_LIMIT:,} limit)")
         st.caption("💰 Total tracks cumulative token spend across all turns")
@@ -646,8 +638,7 @@ def main():
                 with st.spinner("Analyzing goal and creating initial plan..."):
                     session = agent.start_session(
                         goal_text=input_text,
-                        max_tokens=max_tokens,
-                        max_turns=max_turns
+                        max_tokens=max_tokens
                     )
                     st.session_state.current_session = session
                     st.session_state.input_text = ""  # Clear after starting session
@@ -696,7 +687,7 @@ def main():
             st.markdown(f"""
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                 <h3 style="margin: 0;">🎮 Execution</h3>
-                <span style="color: #64748b; font-size: 1.3rem; font-weight: 600;">Turn {session.budget.current_turn}/{session.budget.max_turns}</span>
+                <span style="color: #64748b; font-size: 1.3rem; font-weight: 600;">Turn {session.budget.current_turn}</span>
             </div>
             """, unsafe_allow_html=True)
             

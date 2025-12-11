@@ -11,7 +11,7 @@ SUMMARIZATION_TEMPERATURE = 0.2  # Lower temperature for more consistent summari
 # Token Budget Limits
 CONTEXT_WINDOW_LIMIT = 200_000  # Max tokens for input context (Claude's limit)
 DEFAULT_MAX_TOTAL_TOKENS = 10_000_000  # Default total token budget (cumulative spend)
-DEFAULT_MAX_TURNS = 50  # Default maximum turns per session
+DEFAULT_MAX_TURNS = 999  # High default for backward compatibility (not enforced)
 TOKEN_ESTIMATION_DIVISOR = 4  # Rough estimate: chars / 4 ≈ tokens
 
 # History Management
