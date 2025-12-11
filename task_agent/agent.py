@@ -746,7 +746,9 @@ REMINDER:
             parts.append(f"Turn {entry.turn}: {entry.action.tool_category}/{entry.action.tool_name}")
             parts.append(f"  Params: {json.dumps(entry.action.parameters)}")
             if entry.result.get("success"):
-                result_str = json.dumps(entry.result.get("result", {}))
+                # Extract everything except "success" as the result
+                result_data = {k: v for k, v in entry.result.items() if k != "success"}
+                result_str = json.dumps(result_data)
                 parts.append(f"  Result: {result_str}")
             else:
                 parts.append(f"  Error: {entry.result.get('error', 'Unknown')}")
@@ -1120,7 +1122,10 @@ REMINDER:
         # Update plan step status based on result
         if action.plan_step_id:
             if result.get("success"):
-                result_str = json.dumps(result.get("result", {}))
+                # Extract everything except the "success" field as the result
+                result_data = {k: v for k, v in result.items() if k != "success"}
+                result_str = json.dumps(result_data)
+                
                 self.session_manager.update_step_status(
                     action.plan_step_id,
                     StepStatus.COMPLETED,

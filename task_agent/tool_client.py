@@ -181,19 +181,45 @@ class ToolRegistryClient:
                     "raw_response": response.text
                 }
             
-            # Check for "success" field in the response
+            # Validate and extract success field (default to False if missing)
             if "success" not in result_data:
                 logger.warning(f"Response missing 'success' field: {result_data}")
-                return {
-                    "success": False,
-                    "error": "Response missing 'success' field",
-                    "result": result_data
-                }
+                success_value = None
+            else:
+                success_value = result_data.get("success")
+            if "result" in result_data:
+                inner_result = result_data["result"]
+                
+                # If result is a JSON string, parse it
+                if isinstance(inner_result, str):
+                    try:
+                        inner_result = json.loads(inner_result)
+                    except json.JSONDecodeError:
+                        # Not JSON, keep as string
+                        pass
+                
+                # If inner result is a dict, merge it with success status
+                if isinstance(inner_result, dict):
+                    unwrapped = {"success": success_value}
+                    unwrapped.update(inner_result)
+                    logger.info(f"Function executed, success={success_value}, unwrapped nested result")
+                    return unwrapped
+                else:
+                    # Inner result is not a dict (string, list, etc.), return as-is with success
+                    logger.info(f"Function executed, success={success_value}, result is non-dict type")
+                    return {
+                        "success": success_value,
+                        "result": inner_result
+                    }
             
-            # Pass through the API response directly (no additional wrapping)
-            # The API response already has "success", "result", and optionally "error"
-            logger.info(f"Function executed, success={result_data.get('success')}")
-            return result_data
+            # No nested result field, return response as-is (removing function_name if present)
+            cleaned_result = {"success": success_value}
+            for k, v in result_data.items():
+                if k not in ("success", "function_name"):
+                    cleaned_result[k] = v
+            
+            logger.info(f"Function executed, success={success_value}")
+            return cleaned_result
             
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
