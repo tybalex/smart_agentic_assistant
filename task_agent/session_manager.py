@@ -1,5 +1,5 @@
 """
-Session Manager for the Continuous Planning Agent.
+Session Manager for the Smart Agent.
 Handles session persistence and state management.
 """
 
@@ -14,7 +14,7 @@ from models import (
     HistoryEntry, HistorySummary, TokenBudget,
     SessionStatus, StepStatus, TextSpan, generate_id,
     ClarificationQuestion, ClarificationAnswer, ClarificationEntry,
-    RejectionFeedback, RejectionEntry
+    RejectionFeedback, RejectionEntry, CompletedAction
 )
 
 
@@ -222,16 +222,8 @@ class SessionManager:
                 if tool_params:
                     step.tool_params = tool_params
                 
-                # Record completed steps in immutable log
-                if status == StepStatus.COMPLETED:
-                    from models import CompletedStep
-                    completed_step = CompletedStep(
-                        step_id=step.id,
-                        description=step.description,
-                        turn=self.current_session.budget.current_turn,
-                        result_summary=result[:200] if result else "Success"
-                    )
-                    self.current_session.completed_steps.append(completed_step)
+                # Note: Completed actions are now created in add_history_entry()
+                # This ensures ALL actions are tracked, not just those linked to plan steps
                 
                 self.save_session()
                 return step
@@ -285,7 +277,7 @@ class SessionManager:
     # ===================
     
     def add_history_entry(self, action: Action, result: Dict[str, Any]) -> HistoryEntry:
-        """Add an entry to execution history."""
+        """Add an entry to execution history and create a completed action record."""
         if not self.current_session:
             raise ValueError("No active session")
         
@@ -297,6 +289,35 @@ class SessionManager:
         )
         
         self.current_session.history.append(entry)
+        
+        # Always create a completed action record for every execution
+        # This provides a complete audit trail regardless of plan linkage
+        if result.get("success"):
+            # Build description: prefer plan step description, fallback to action reasoning or tool name
+            description = action.reasoning if action.reasoning else f"Called {action.tool_category}/{action.tool_name}"
+            
+            # If linked to a plan step, use the step's description
+            if action.plan_step_id:
+                for step in self.current_session.plan.steps:
+                    if step.id == action.plan_step_id:
+                        description = step.description
+                        break
+            
+            # Extract result summary (everything except "success")
+            result_data = {k: v for k, v in result.items() if k != "success"}
+            result_str = json.dumps(result_data)
+            result_summary = result_str[:200] if result_str else "Success"
+            
+            completed_action = CompletedAction(
+                tool_category=action.tool_category,
+                tool_name=action.tool_name,
+                description=description,
+                turn=self.current_session.budget.current_turn,
+                result_summary=result_summary,
+                step_id=action.plan_step_id  # Optional - may be None
+            )
+            self.current_session.completed_actions.append(completed_action)
+        
         self.save_session()
         return entry
     

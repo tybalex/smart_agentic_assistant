@@ -1,5 +1,5 @@
 """
-Continuous Planning Agent powered by Claude.
+Smart Agent powered by Claude.
 Implements an adaptive planning loop that re-evaluates and updates plans each turn.
 """
 
@@ -11,11 +11,11 @@ from datetime import datetime
 from anthropic import Anthropic
 
 from models import (
-    Session, Goal, AgentState, Plan, PlanStep, Action,
-    HistoryEntry, HistorySummary, TokenBudget, TurnResult, ExecutionResult,
-    SessionStatus, StepStatus, TextSpan, generate_id,
+    Session, Goal, AgentState, Plan, PlanStep, Action, BatchAction,
+    HistoryEntry, HistorySummary, TokenBudget, TurnResult, ExecutionResult, BatchExecutionResult,
+    SessionStatus, StepStatus, TextSpan, generate_id, FailureStrategy,
     ClarificationQuestion, ClarificationAnswer, ClarificationEntry,
-    RejectionFeedback, RejectionEntry, CompletedStep, CachedFunctionDetail
+    RejectionFeedback, RejectionEntry, CompletedAction, CachedFunctionDetail
 )
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
@@ -26,7 +26,9 @@ from constant import (
     SUMMARIZATION_TEMPERATURE,
     TOKEN_ESTIMATION_DIVISOR,
     MAX_CLARIFICATIONS_IN_CONTEXT,
-    MAX_CACHED_FUNCTION_DETAILS
+    MAX_EXECUTION_HISTORY_IN_CONTEXT,
+    MAX_CACHED_FUNCTION_DETAILS,
+    MAX_BATCH_SIZE
 )
 
 # Configure logging
@@ -403,17 +405,21 @@ Remember to identify exact text spans for each step."""
                     reasoning=evaluation.get("reasoning", "All objectives completed.")
                 )
             
-            # Check for clarification question
-            clarification_data = evaluation.get("clarification_question")
-            if clarification_data and isinstance(clarification_data, dict) and clarification_data.get("question"):
+            # Check for clarification questions (now supports multiple questions)
+            clarification_questions_data = evaluation.get("clarification_questions")
+            if clarification_questions_data and isinstance(clarification_questions_data, list) and len(clarification_questions_data) > 0:
+                # For now, handle first question only (UI currently supports one at a time)
+                question_data = clarification_questions_data[0]
                 question = ClarificationQuestion(
                     id=generate_id(),
-                    question=clarification_data.get("question", ""),
-                    context=clarification_data.get("context", ""),
-                    options=clarification_data.get("options", []),
-                    related_step_id=clarification_data.get("related_step_id")
+                    question=question_data.get("question", ""),
+                    context=question_data.get("context", ""),
+                    options=question_data.get("options", []),
+                    related_step_id=question_data.get("related_step_id")
                 )
                 logger.info(f"Agent asking clarification: {question.question[:50]}...")
+                if len(clarification_questions_data) > 1:
+                    logger.info(f"Note: Agent proposed {len(clarification_questions_data)} questions, using first one for now")
                 return TurnResult(
                     status="needs_clarification",
                     session=self.current_session,
@@ -421,9 +427,9 @@ Remember to identify exact text spans for each step."""
                     reasoning=evaluation.get("reasoning", "Need more information to proceed.")
                 )
             
-            # Get proposed action
-            action_data = evaluation.get("next_action")
-            if not action_data:
+            # Check for actions (unified API: always use next_actions array)
+            actions_data = evaluation.get("next_actions")
+            if not actions_data or not isinstance(actions_data, list) or len(actions_data) == 0:
                 return TurnResult(
                     status="no_action",
                     session=self.current_session,
@@ -431,37 +437,107 @@ Remember to identify exact text spans for each step."""
                     error=evaluation.get("blocker")
                 )
             
-            # Check if this is a registry discovery tool - auto-execute!
-            tool_category = action_data.get("tool_category", "")
-            tool_name = action_data.get("tool_name", "")
+            # Validate batch size
+            if len(actions_data) > MAX_BATCH_SIZE:
+                logger.warning(f"Batch size {len(actions_data)} exceeds max {MAX_BATCH_SIZE}")
+                return TurnResult(
+                    status="error",
+                    session=self.current_session,
+                    error=f"Batch size {len(actions_data)} exceeds maximum {MAX_BATCH_SIZE}",
+                    reasoning="Please reduce batch size or split into multiple turns"
+                )
             
-            if tool_category == "registry" and tool_name in ["registry_search", "registry_list_category", "registry_get_function"]:
-                # Auto-execute registry tool (no approval needed, doesn't count as turn)
-                logger.info(f"Auto-executing registry tool: {tool_name}")
-                result = self._execute_registry_tool(tool_name, action_data.get("parameters", {}))
+            # Handle single action (len=1) - check if registry tool for auto-execution
+            if len(actions_data) == 1:
+                action_data = actions_data[0]
+                tool_category = action_data.get("tool_category", "")
+                tool_name = action_data.get("tool_name", "")
                 
-                registry_results.append({
-                    "tool": tool_name,
-                    "params": action_data.get("parameters", {}),
-                    "result": result
-                })
-                logger.info(f"Registry call #{len(registry_results)} completed, continuing evaluation...")
-                continue  # Loop back to evaluate with new info
+                if tool_category == "registry" and tool_name in ["registry_search", "registry_list_category", "registry_get_function"]:
+                    # Auto-execute registry tool (no approval needed, doesn't count as turn)
+                    logger.info(f"Auto-executing registry tool: {tool_name}")
+                    result = self._execute_registry_tool(tool_name, action_data.get("parameters", {}))
+                    
+                    registry_results.append({
+                        "tool": tool_name,
+                        "params": action_data.get("parameters", {}),
+                        "result": result
+                    })
+                    logger.info(f"Registry call #{len(registry_results)} completed, continuing evaluation...")
+                    continue  # Loop back to evaluate with new info
+                
+                # Single non-registry action - return for user approval
+                action = Action(
+                    id=generate_id(),
+                    plan_step_id=action_data.get("plan_step_id", ""),
+                    tool_category=tool_category,
+                    tool_name=tool_name,
+                    parameters=action_data.get("parameters", {}),
+                    reasoning=action_data.get("reasoning", evaluation.get("reasoning", ""))
+                )
+                
+                return TurnResult(
+                    status="awaiting_approval",
+                    session=self.current_session,
+                    proposed_action=action,
+                    reasoning=evaluation.get("reasoning", "")
+                )
             
-            # Non-registry action - return for user approval
-            action = Action(
+            # Handle multiple actions (len > 1) - create batch
+            # Parse failure strategy (required for multi-action batches)
+            failure_strategy_str = evaluation.get("failure_strategy", "continue")
+            try:
+                failure_strategy = FailureStrategy(failure_strategy_str)
+            except ValueError:
+                logger.warning(f"Invalid failure_strategy '{failure_strategy_str}', defaulting to CONTINUE")
+                failure_strategy = FailureStrategy.CONTINUE
+            
+            # Create Action objects
+            actions = []
+            for action_data in actions_data:
+                action = Action(
+                    id=generate_id(),
+                    plan_step_id=action_data.get("plan_step_id", ""),
+                    tool_category=action_data.get("tool_category", ""),
+                    tool_name=action_data.get("tool_name", ""),
+                    parameters=action_data.get("parameters", {}),
+                    reasoning=action_data.get("reasoning", "")
+                )
+                actions.append(action)
+            
+            # Create batch
+            batch = BatchAction(
                 id=generate_id(),
-                plan_step_id=action_data.get("plan_step_id", ""),
-                tool_category=tool_category,
-                tool_name=tool_name,
-                parameters=action_data.get("parameters", {}),
-                reasoning=action_data.get("reasoning", evaluation.get("reasoning", ""))
+                actions=actions,
+                failure_strategy=failure_strategy,
+                reasoning=evaluation.get("reasoning", "Batch execution")
             )
             
+            # Check if ALL actions are registry tools - auto-execute if so
+            all_registry = all(
+                action.tool_category == "registry" and 
+                action.tool_name in ["registry_search", "registry_list_category", "registry_get_function"]
+                for action in actions
+            )
+            
+            if all_registry:
+                # Auto-execute all registry tools in batch (no approval needed, doesn't count as turn)
+                logger.info(f"Auto-executing batch of {len(actions)} registry tools")
+                for action in actions:
+                    result = self._execute_registry_tool(action.tool_name, action.parameters)
+                    registry_results.append({
+                        "tool": action.tool_name,
+                        "params": action.parameters,
+                        "result": result
+                    })
+                logger.info(f"Batch registry calls completed ({len(registry_results)} total), continuing evaluation...")
+                continue  # Loop back to evaluate with new info
+            
+            logger.info(f"Agent proposed batch of {len(actions)} actions with {failure_strategy.value} strategy")
             return TurnResult(
                 status="awaiting_approval",
                 session=self.current_session,
-                proposed_action=action,
+                proposed_batch=batch,
                 reasoning=evaluation.get("reasoning", "")
             )
         
@@ -501,7 +577,7 @@ Remember to identify exact text spans for each step."""
         rejections_str = self._format_rejections(session.rejections)
         
         # Format completed steps log
-        completed_steps_str = self._format_completed_steps(session.completed_steps)
+        completed_actions_str = self._format_completed_actions(session.completed_actions)
         
         # Format registry discovery results (from auto-executed calls this turn)
         registry_str = self._format_registry_results(registry_results or [])
@@ -517,7 +593,7 @@ CRITICAL CONSTRAINTS - YOU MUST FOLLOW THESE:
 - DO NOT make up, invent, or hallucinate tools that are not in the list above
 - DO NOT suggest making direct HTTP requests, API calls, or web requests
 - DO NOT suggest using external services, websites, or APIs not in the tool registry
-- If the next step requires a capability not in the available tools, set "next_action" to null and explain in "blockers"
+- If the next step requires a capability not in the available tools, set "next_actions" to null and explain in "blockers"
 - Every tool_category and tool_name you propose MUST exist in the AVAILABLE TOOLS list above
 - PARAMETER NAMES MUST MATCH EXACTLY as shown in the tool registry (e.g., if registry shows "data", use "data" NOT "fields")
 
@@ -530,16 +606,35 @@ These tools are executed automatically without user approval. Use them freely to
 IMPORTANT: Check DISCOVERED FUNCTIONS first! If you see a function name already listed there, you don't need to search for it again.
 Also check CACHED FUNCTION DETAILS - if a function's full details are already cached, you can use it immediately without calling registry_get_function.
 
+ACTION EXECUTION:
+Propose actions using "next_actions" array (1 to {MAX_BATCH_SIZE} actions per turn).
+
+WHEN TO USE MULTIPLE ACTIONS:
+- Independent operations that don't depend on each other's results
+- Same tool with different parameters (e.g., add 5 users, create 3 issues)
+- Parallel-safe operations where order doesn't matter
+- Reduces turns and improves efficiency
+
+WHEN TO USE SINGLE ACTION:
+- Action result needed to decide next step
+- Complex operations requiring validation
+- When in doubt, start with one action
+
+FAILURE STRATEGIES (required when len(next_actions) > 1):
+- "continue": Execute all actions regardless of failures (best for independent ops like bulk user additions)
+- "stop_on_error": Stop immediately on first error and skip remaining (best for sequential dependencies)
+
 YOUR RESPONSIBILITIES:
 1. Evaluate progress toward the goal
 2. Update the plan if needed (add/remove/reorder steps)
-3. DECIDE: Either propose ONE action OR ask a clarification question
-   - Propose an ACTION if you have enough information to proceed confidently
-   - Ask a CLARIFICATION QUESTION if:
+3. DECIDE: Propose action(s) OR ask clarification question(s)
+   - Propose ACTIONS if you have enough information to proceed confidently
+   - Ask CLARIFICATION QUESTIONS if:
      * Information is ambiguous or incomplete
      * Multiple valid interpretations exist
      * Making an assumption could lead to wrong results
-     * User preferences are needed for a decision
+     * User preferences are needed for decisions
+   - You can ask multiple related questions at once
 4. If the goal is fully achieved, indicate so
 5. If stuck due to missing tools, explain clearly
 
@@ -570,8 +665,8 @@ Blockers: {json.dumps(session.state.blockers)}
 CURRENT PLAN:
 {plan_str}
 
-COMPLETED STEPS LOG (immutable record - preserved even if steps removed from plan):
-{completed_steps_str}
+COMPLETED ACTIONS LOG (immutable record of all executed actions):
+{completed_actions_str}
 
 EXECUTION HISTORY:
 {history_str}
@@ -599,32 +694,43 @@ Evaluate the situation and respond with JSON:
         "update_steps": [{{"step_id": "...", "new_description": "..."}}]
     }},
     
-    // CHOOSE ONE: Either "next_action" OR "clarification_question", NOT BOTH
+    // CHOOSE ONE: Either "next_actions" (1 or more) OR "clarification_questions" (1 or more)
     
-    "next_action": {{
-        "plan_step_id": "which step this fulfills",
-        "tool_category": "category",
-        "tool_name": "function_name",
-        "parameters": {{...use EXACT parameter names from tool registry...}},
-        "reasoning": "why this action now"
-    }} or null if asking question or goal achieved or stuck,
+    // Propose action(s):
+    "next_actions": [
+        {{
+            "plan_step_id": "which step this fulfills",
+            "tool_category": "category",
+            "tool_name": "function_name",
+            "parameters": {{...use EXACT parameter names from tool registry...}},
+            "reasoning": "why this specific action"
+        }}
+        // ... up to {MAX_BATCH_SIZE} actions total
+    ] or null,
+    "failure_strategy": "continue" or "stop_on_error",  // Required if next_actions.length > 1
     
-    "clarification_question": {{
-        "question": "What specific information do you need?",
-        "context": "Why you need this information",
-        "options": ["Option A", "Option B"] or [],
-        "related_step_id": "step_id this relates to" or null
-    }} or null if taking action,
+    // OR ask for clarification:
+    "clarification_questions": [
+        {{
+            "question": "What specific information do you need?",
+            "context": "Why you need this information",
+            "options": ["Option A", "Option B"] or [],
+            "related_step_id": "step_id this relates to" or null
+        }}
+        // ... can ask multiple related questions
+    ] or null,
     
     "reasoning": "overall analysis..."
 }}
 
 REMINDER: 
 - When specifying "parameters", use the EXACT parameter names shown in AVAILABLE TOOLS.
-- If you need clarification from the user, set "next_action" to null and provide "clarification_question".
-- If you have enough info to proceed, set "clarification_question" to null and provide "next_action".
+- Always use "next_actions" array (even for single action). Include "failure_strategy" if len > 1.
+- If you need clarification, set "next_actions" to null and provide "clarification_questions" array.
+- If you have enough info to proceed, set "clarification_questions" to null and provide "next_actions".
 - Don't ask unnecessary questions - only ask when genuinely uncertain about something important.
-- If the user's answer to a previous clarification is itself a question or challenge, you should ask another clarification question to address their concern.
+- You can ask multiple related questions at once if they're all needed.
+- If the user's answer to a previous clarification is itself a question or challenge, ask another clarification question to address their concern.
 - ALWAYS respond with valid JSON - never respond with plain text."""
 
         try:
@@ -635,8 +741,8 @@ REMINDER:
             
             data = self._parse_json_response(response)
             logger.info(f"Goal achieved: {data.get('goal_achieved', False)}")
-            next_action = data.get('next_action') or {}  # Handle explicit null
-            logger.debug(f"Next action: {next_action.get('tool_name', 'None')}")
+            next_actions = data.get('next_actions') or []
+            logger.debug(f"Next actions count: {len(next_actions)}")
             
             # Update state
             new_state = AgentState(
@@ -742,7 +848,7 @@ REMINDER:
             parts.append("")
         
         # Include recent history
-        for entry in history[-5:]:  # Last 5 entries
+        for entry in history[-MAX_EXECUTION_HISTORY_IN_CONTEXT:]:
             parts.append(f"Turn {entry.turn}: {entry.action.tool_category}/{entry.action.tool_name}")
             parts.append(f"  Params: {json.dumps(entry.action.parameters)}")
             if entry.result.get("success"):
@@ -785,15 +891,16 @@ REMINDER:
         
         return "\n".join(parts)
     
-    def _format_completed_steps(self, completed_steps: List['CompletedStep']) -> str:
-        """Format completed steps log for prompt."""
-        if not completed_steps:
-            return "No steps completed yet."
+    def _format_completed_actions(self, completed_actions: List['CompletedAction']) -> str:
+        """Format completed actions log for prompt."""
+        if not completed_actions:
+            return "No actions completed yet."
         
         parts = []
-        for cs in completed_steps:
-            parts.append(f"[{cs.step_id}] Completed at Turn {cs.turn}: {cs.description}")
-            parts.append(f"  Outcome: {cs.result_summary}")
+        for ca in completed_actions:
+            step_ref = f"[{ca.step_id}] " if ca.step_id else ""
+            parts.append(f"{step_ref}Turn {ca.turn}: {ca.tool_category}/{ca.tool_name} - {ca.description}")
+            parts.append(f"  Outcome: {ca.result_summary}")
             parts.append("")
         
         return "\n".join(parts)
@@ -1068,10 +1175,12 @@ REMINDER:
         else:
             return {"success": False, "error": f"Unknown registry tool: {tool_name}"}
     
-    def execute_action(self, action: Action) -> ExecutionResult:
+    def _execute_single_action(self, action: Action) -> ExecutionResult:
         """
         Execute an approved action and update session state.
         Validates that the tool exists in the registry before execution.
+        
+        Internal helper method - use execute_batch for public API.
         """
         session = self.current_session
         if not session:
@@ -1153,6 +1262,67 @@ REMINDER:
             data=result,
             error=result.get("error"),
             tokens_used=result_tokens
+        )
+    
+    def execute_batch(self, batch: BatchAction) -> BatchExecutionResult:
+        """
+        Execute a batch of actions with configurable failure strategy.
+        
+        Returns BatchExecutionResult with individual results and aggregated metadata.
+        """
+        session = self.current_session
+        if not session:
+            return BatchExecutionResult(
+                results=[],
+                overall_success=False,
+                total_tokens_used=0
+            )
+        
+        logger.info(f"Executing batch of {len(batch.actions)} actions with strategy: {batch.failure_strategy.value}")
+        
+        results: List[ExecutionResult] = []
+        total_tokens = 0
+        stopped_early = False
+        stopped_at_index = None
+        
+        for i, action in enumerate(batch.actions):
+            logger.info(f"Batch action {i+1}/{len(batch.actions)}: {action.tool_category}/{action.tool_name}")
+            
+            # Execute the action
+            exec_result = self._execute_single_action(action)
+            
+            # Store reference to the action in the result
+            exec_result.action = action
+            results.append(exec_result)
+            total_tokens += exec_result.tokens_used
+            
+            # Check failure strategy
+            if not exec_result.success and batch.failure_strategy == FailureStrategy.STOP_ON_ERROR:
+                logger.warning(f"Batch execution stopped at action {i+1} due to failure")
+                stopped_early = True
+                stopped_at_index = i
+                
+                # Mark remaining actions as skipped
+                for remaining_action in batch.actions[i+1:]:
+                    if remaining_action.plan_step_id:
+                        self.session_manager.update_step_status(
+                            remaining_action.plan_step_id,
+                            StepStatus.SKIPPED,
+                            error="Skipped due to earlier batch failure"
+                        )
+                break
+        
+        # Determine overall success
+        overall_success = all(r.success for r in results)
+        
+        logger.info(f"Batch complete: {len(results)} executed, {sum(1 for r in results if r.success)} succeeded")
+        
+        return BatchExecutionResult(
+            results=results,
+            overall_success=overall_success,
+            total_tokens_used=total_tokens,
+            stopped_early=stopped_early,
+            stopped_at_index=stopped_at_index
         )
     
     def skip_action(self, action: Action) -> None:

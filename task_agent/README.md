@@ -1,4 +1,4 @@
-# 🤖 Continuous Planning Agent
+# 🤖 Smart Agent
 
 An intelligent task execution system using **continuous re-planning**. Instead of parsing all tasks upfront, the agent evaluates the situation each turn, updates its plan based on results, and proposes one action at a time for user approval.
 

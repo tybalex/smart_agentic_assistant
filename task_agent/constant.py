@@ -16,7 +16,11 @@ TOKEN_ESTIMATION_DIVISOR = 4  # Rough estimate: chars / 4 ≈ tokens
 
 # History Management
 MAX_CLARIFICATIONS_IN_CONTEXT = 10  # Number of recent clarification Q&As to include
+MAX_EXECUTION_HISTORY_IN_CONTEXT = 20  # Number of recent execution turns to include
 
 # Tool Discovery Cache
-MAX_CACHED_FUNCTION_DETAILS = 10  # LRU cache limit for detailed function specifications
+MAX_CACHED_FUNCTION_DETAILS = 20  # LRU cache limit for detailed function specifications
+
+# Batch Action Execution
+MAX_BATCH_SIZE = 10  # Maximum number of actions in a single batch
 

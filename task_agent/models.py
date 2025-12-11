@@ -1,5 +1,5 @@
 """
-Data models for the Continuous Planning Agent system.
+Data models for the Smart Agent system.
 """
 
 from dataclasses import dataclass, field
@@ -35,6 +35,12 @@ class SessionStatus(Enum):
     COMPLETED = "completed"
     ABORTED = "aborted"
     BUDGET_EXCEEDED = "budget_exceeded"
+
+
+class FailureStrategy(Enum):
+    """Strategy for handling failures in batch action execution."""
+    CONTINUE = "continue"  # Continue executing remaining actions even if one fails
+    STOP_ON_ERROR = "stop_on_error"  # Stop immediately on first error
 
 
 @dataclass
@@ -201,33 +207,39 @@ class Plan:
 
 
 @dataclass
-class CompletedStep:
+class CompletedAction:
     """
-    Immutable record of a completed plan step.
-    Preserved even if the step is removed from the active plan.
+    Immutable record of a completed action.
+    Tracks all executed actions, whether or not they're linked to a plan step.
     """
-    step_id: str  # Original PlanStep ID
-    description: str  # Snapshot of step description when completed
+    tool_category: str  # Category of the tool used
+    tool_name: str  # Name of the tool used
+    description: str  # Human-readable description of what was done
     turn: int  # When it was completed
     result_summary: str  # Brief summary of the outcome
+    step_id: Optional[str] = None  # Original PlanStep ID (if linked to a plan step)
     completed_at: datetime = field(default_factory=datetime.now)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "step_id": self.step_id,
+            "tool_category": self.tool_category,
+            "tool_name": self.tool_name,
             "description": self.description,
             "turn": self.turn,
             "result_summary": self.result_summary,
+            "step_id": self.step_id,
             "completed_at": self.completed_at.isoformat()
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CompletedStep":
+    def from_dict(cls, data: Dict[str, Any]) -> "CompletedAction":
         return cls(
-            step_id=data["step_id"],
+            tool_category=data["tool_category"],
+            tool_name=data["tool_name"],
             description=data["description"],
             turn=data["turn"],
             result_summary=data["result_summary"],
+            step_id=data.get("step_id"),
             completed_at=datetime.fromisoformat(data["completed_at"])
         )
 
@@ -289,6 +301,32 @@ class Action:
             tool_category=data["tool_category"],
             tool_name=data["tool_name"],
             parameters=data.get("parameters", {}),
+            reasoning=data.get("reasoning", "")
+        )
+
+
+@dataclass
+class BatchAction:
+    """Multiple actions to be executed as a batch."""
+    id: str
+    actions: List[Action]
+    failure_strategy: FailureStrategy = FailureStrategy.CONTINUE
+    reasoning: str = ""  # Why execute these as a batch
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "actions": [a.to_dict() for a in self.actions],
+            "failure_strategy": self.failure_strategy.value,
+            "reasoning": self.reasoning
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BatchAction":
+        return cls(
+            id=data["id"],
+            actions=[Action.from_dict(a) for a in data["actions"]],
+            failure_strategy=FailureStrategy(data.get("failure_strategy", "continue")),
             reasoning=data.get("reasoning", "")
         )
 
@@ -568,7 +606,7 @@ class Session:
     history_summaries: List[HistorySummary] = field(default_factory=list)  # Compressed old history
     clarifications: List[ClarificationEntry] = field(default_factory=list)  # Q&A history
     rejections: List[RejectionEntry] = field(default_factory=list)  # Rejected actions with feedback
-    completed_steps: List[CompletedStep] = field(default_factory=list)  # Immutable log of completed work
+    completed_actions: List[CompletedAction] = field(default_factory=list)  # Immutable log of all executed actions
     budget: TokenBudget = field(default_factory=TokenBudget)
     status: SessionStatus = SessionStatus.ACTIVE
     agent_notes: List[str] = field(default_factory=list)  # Agent observations
@@ -601,7 +639,7 @@ class Session:
             "history_summaries": [hs.to_dict() for hs in self.history_summaries],
             "clarifications": [c.to_dict() for c in self.clarifications],
             "rejections": [r.to_dict() for r in self.rejections],
-            "completed_steps": [cs.to_dict() for cs in self.completed_steps],
+            "completed_actions": [ca.to_dict() for ca in self.completed_actions],
             "budget": self.budget.to_dict(),
             "status": self.status.value,
             "agent_notes": self.agent_notes,
@@ -622,7 +660,7 @@ class Session:
             history_summaries=[HistorySummary.from_dict(hs) for hs in data.get("history_summaries", [])],
             clarifications=[ClarificationEntry.from_dict(c) for c in data.get("clarifications", [])],
             rejections=[RejectionEntry.from_dict(r) for r in data.get("rejections", [])],
-            completed_steps=[CompletedStep.from_dict(cs) for cs in data.get("completed_steps", [])],
+            completed_actions=[CompletedAction.from_dict(ca) for ca in data.get("completed_actions", [])],
             budget=TokenBudget.from_dict(data.get("budget", {})),
             status=SessionStatus(data.get("status", "active")),
             agent_notes=data.get("agent_notes", []),
@@ -640,6 +678,7 @@ class TurnResult:
     status: str
     session: Optional[Session] = None
     proposed_action: Optional[Action] = None
+    proposed_batch: Optional[BatchAction] = None  # NEW: batch of actions
     clarification_question: Optional[ClarificationQuestion] = None  # NEW: question for user
     reasoning: str = ""
     goal_achieved: bool = False
@@ -650,6 +689,7 @@ class TurnResult:
             "status": self.status,
             "session": self.session.to_dict() if self.session else None,
             "proposed_action": self.proposed_action.to_dict() if self.proposed_action else None,
+            "proposed_batch": self.proposed_batch.to_dict() if self.proposed_batch else None,
             "clarification_question": self.clarification_question.to_dict() if self.clarification_question else None,
             "reasoning": self.reasoning,
             "goal_achieved": self.goal_achieved,
@@ -664,14 +704,45 @@ class ExecutionResult:
     data: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     tokens_used: int = 0
+    action: Optional[Action] = None  # Reference to the action that was executed
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
             "data": self.data,
             "error": self.error,
-            "tokens_used": self.tokens_used
+            "tokens_used": self.tokens_used,
+            "action": self.action.to_dict() if self.action else None
         }
+
+
+@dataclass
+class BatchExecutionResult:
+    """Result of executing a batch of actions."""
+    results: List[ExecutionResult]  # Individual results for each action
+    overall_success: bool  # True if all succeeded (or continue strategy completed all)
+    total_tokens_used: int = 0
+    stopped_early: bool = False  # True if stop_on_error strategy triggered
+    stopped_at_index: Optional[int] = None  # Index where execution stopped (if stopped_early)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "results": [r.to_dict() for r in self.results],
+            "overall_success": self.overall_success,
+            "total_tokens_used": self.total_tokens_used,
+            "stopped_early": self.stopped_early,
+            "stopped_at_index": self.stopped_at_index
+        }
+    
+    @property
+    def success_count(self) -> int:
+        """Count of successful actions."""
+        return sum(1 for r in self.results if r.success)
+    
+    @property
+    def failure_count(self) -> int:
+        """Count of failed actions."""
+        return sum(1 for r in self.results if not r.success)
 
 
 @dataclass 

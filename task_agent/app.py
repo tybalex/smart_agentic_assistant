@@ -10,7 +10,8 @@ from typing import Optional, Dict, Any, List
 
 from models import (
     Session, StepStatus, PlanStep, Action, SessionStatus, Plan,
-    ClarificationQuestion, ClarificationAnswer, CompletedStep
+    ClarificationQuestion, ClarificationAnswer, CompletedAction,
+    BatchAction, FailureStrategy, generate_id
 )
 from agent import ContinuousPlanningAgent, create_agent
 from session_manager import SessionManager
@@ -533,6 +534,44 @@ def render_action_card(action: Action) -> str:
     """
 
 
+def render_batch_card(batch: BatchAction) -> str:
+    """Render a batch of proposed actions."""
+    # Format strategy with explanation
+    strategy_icon = "🔄" if batch.failure_strategy == FailureStrategy.CONTINUE else "⏹️"
+    strategy_text = "Continue on error" if batch.failure_strategy == FailureStrategy.CONTINUE else "Stop on first error"
+    strategy_color = "#10b981" if batch.failure_strategy == FailureStrategy.CONTINUE else "#f59e0b"
+    
+    # Render each action in the batch
+    actions_html = []
+    for i, action in enumerate(batch.actions, 1):
+        params_html = "<br>".join([
+            f"&nbsp;&nbsp;&nbsp;&nbsp;{k}: {json.dumps(v)}" for k, v in action.parameters.items()
+        ]) if action.parameters else "&nbsp;&nbsp;&nbsp;&nbsp;(none)"
+        
+        actions_html.append(f'<div style="background: #f8fafc; border-left: 3px solid #3b82f6; padding: 0.75rem; margin-bottom: 0.5rem; border-radius: 0.375rem;">' +
+            f'<div style="font-weight: 600; color: #1e293b; margin-bottom: 0.25rem;">Action {i}/{len(batch.actions)}</div>' +
+            f'<div style="color: #475569; font-size: 0.875rem;"><strong>Tool:</strong> {action.tool_category}/{action.tool_name}<br><strong>Parameters:</strong><br>{params_html}</div>' +
+            (f'<div style="color: #64748b; font-size: 0.8125rem; margin-top: 0.25rem; font-style: italic;">{action.reasoning}</div>' if action.reasoning else '') +
+            '</div>')
+    
+    return f"""
+    <div class="action-card" style="border-left: 4px solid #8b5cf6;">
+        <div class="action-label">🎬 Proposed Batch Actions ({len(batch.actions)} actions)</div>
+        <div style="background: {strategy_color}15; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.75rem;">
+            <div style="color: {strategy_color}; font-weight: 500; font-size: 0.875rem;">
+                {strategy_icon} Strategy: {strategy_text}
+            </div>
+        </div>
+        <div class="action-reasoning" style="margin-bottom: 0.75rem;">
+            <strong>Batch Reasoning:</strong> {batch.reasoning}
+        </div>
+        <div style="max-height: 400px; overflow-y: auto;">
+            {''.join(actions_html)}
+        </div>
+    </div>
+    """
+
+
 def render_clarification_card(question: ClarificationQuestion) -> str:
     """Render the clarification question card."""
     options_html = ""
@@ -739,7 +778,21 @@ def main():
                         st.rerun()
                     
                     elif turn_result.status == "awaiting_approval":
+                        # Check if this is a batch or single action
+                        is_batch = turn_result.proposed_batch is not None
                         action = turn_result.proposed_action
+                        
+                        # Normalize to always have a batch (for unified execution API)
+                        if is_batch:
+                            batch = turn_result.proposed_batch
+                        else:
+                            # Create a single-action batch for unified API
+                            batch = BatchAction(
+                                id=generate_id(),
+                                actions=[action],
+                                failure_strategy=FailureStrategy.STOP_ON_ERROR,
+                                reasoning=""
+                            )
                         
                         # Show agent's overall reasoning for this turn
                         if turn_result.reasoning:
@@ -750,7 +803,11 @@ def main():
                             </div>
                             """, unsafe_allow_html=True)
                         
-                        st.markdown(render_action_card(action), unsafe_allow_html=True)
+                        # Display batch or single action
+                        if is_batch:
+                            st.markdown(render_batch_card(batch), unsafe_allow_html=True)
+                        else:
+                            st.markdown(render_action_card(action), unsafe_allow_html=True)
                         
                         # Check if we're in rejection mode
                         if st.session_state.get('show_rejection_input', False):
@@ -787,16 +844,16 @@ def main():
                             with col_approve:
                                 if st.button("✅ Approve", type="primary", use_container_width=True):
                                     with st.spinner("Executing..."):
-                                        result = agent.execute_action(action)
+                                        # Always use execute_batch (handles both single and multiple actions)
+                                        batch_result = agent.execute_batch(batch)
+                                        success_msg = f"{batch_result.success_count}/{len(batch_result.results)} succeeded"
+                                        if batch_result.overall_success:
+                                            st.toast(f"Batch completed! {success_msg}", icon="✅")
+                                        else:
+                                            st.toast(f"Batch partial success: {success_msg}", icon="⚠️")
                                     
                                     st.session_state.turn_result = None
                                     st.session_state.current_session = agent.current_session
-                                    
-                                    if result.success:
-                                        st.toast("Action completed successfully!", icon="✅")
-                                    else:
-                                        st.toast(f"Action failed: {result.error}", icon="❌")
-                                    
                                     st.rerun()
                             
                             with col_reject:
@@ -985,17 +1042,20 @@ def main():
             else:
                 st.info("No plan yet.")
             
-            # Completed steps section
-            if session.completed_steps:
+            # Completed actions section
+            if session.completed_actions:
                 st.divider()
-                st.markdown("### ✅ Completed Steps")
+                st.markdown("### ✅ Completed Actions")
                 
-                for cs in reversed(session.completed_steps[-5:]):  # Show last 5
+                for ca in reversed(session.completed_actions[-10:]):  # Show last 10
+                    # Show tool info and description
+                    tool_info = f"{ca.tool_category}/{ca.tool_name}"
                     st.markdown(f"""
                     <div class="history-entry" style="border-left: 3px solid #10b981;">
-                        <div class="history-turn">Turn {cs.turn}</div>
-                        <div style="color: #059669; font-weight: 500;">{html.escape(cs.description)}</div>
-                        <div style="color: #64748b; margin-top: 0.25rem; font-size: 0.875rem;">✓ {html.escape(cs.result_summary)}</div>
+                        <div class="history-turn">Turn {ca.turn}</div>
+                        <div style="color: #059669; font-weight: 600; margin-bottom: 0.25rem;">{html.escape(tool_info)}</div>
+                        <div style="color: #374151; font-size: 0.9rem;">{html.escape(ca.description)}</div>
+                        <div style="color: #64748b; margin-top: 0.25rem; font-size: 0.875rem;">✓ {html.escape(ca.result_summary)}</div>
                     </div>
                     """, unsafe_allow_html=True)
             
