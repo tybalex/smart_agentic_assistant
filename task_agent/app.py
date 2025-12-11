@@ -1,5 +1,5 @@
 """
-Streamlit UI for the Continuous Planning Agent.
+Streamlit UI for the Smart Agent.
 Provides goal input, plan visualization, state tracking, and execution controls.
 """
 
@@ -21,7 +21,7 @@ from constant import CONTEXT_WINDOW_LIMIT
 
 # Page configuration
 st.set_page_config(
-    page_title="Continuous Planning Agent",
+    page_title="Smart Agent",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -593,7 +593,7 @@ def main():
     init_session_state()
     
     # Header
-    st.markdown('<div class="main-header">🤖 Continuous Planning Agent</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🤖 Smart Agent</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Adaptive planning with step-by-step execution</div>', unsafe_allow_html=True)
     
     # Sidebar
