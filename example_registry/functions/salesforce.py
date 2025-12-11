@@ -29,17 +29,22 @@ _mock_salesforce = {
 _id_counter = 1000
 
 def salesforce_query(query: str) -> str:
-    """Execute a SOQL query in Salesforce
+    """Execute a SOQL query in Salesforce.
     
-    Supports basic SOQL syntax:
-    - SELECT * FROM ObjectType
-    - SELECT field1, field2 FROM ObjectType  
-    - WHERE field = 'value' AND field2 = 'value2'
-    - WHERE field LIKE '%text%' (supports %, %text, text%)
-    - ORDER BY field ASC/DESC
-    - LIMIT n
+    Args:
+        query: SOQL query string. Supports:
+               - SELECT * FROM ObjectType
+               - SELECT field1, field2 FROM ObjectType  
+               - WHERE field = 'value' AND field2 = 'value2'
+               - WHERE field LIKE '%text%' (supports %, %text, text%)
+               - WHERE field = true/false (boolean values)
+               - ORDER BY field ASC/DESC
+               - LIMIT n
+               Note: Subqueries in parentheses are stripped (main query only)
     
-    Note: Subqueries in parentheses are ignored (main query only)
+    Returns:
+        JSON string with success status, totalSize, done flag, and records list.
+        Each record is a dict with the requested fields and values
     """
     query = query.strip()
     
@@ -247,9 +252,11 @@ def salesforce_describe_object(object_type: str) -> str:
 
 
 def salesforce_list_objects() -> str:
-    """List all available Salesforce object types in this mock
+    """List all available Salesforce object types in this mock.
     
-    Returns a list of object types that can be queried or created.
+    Returns:
+        JSON string with success status, objects list (each with name, label, and description),
+        and total count. Helps agents discover which objects are available for querying
     """
     return json.dumps({
         "success": True,
@@ -264,7 +271,16 @@ def salesforce_list_objects() -> str:
 
 
 def salesforce_create(object_type: str, data: dict) -> str:
-    """Create a new record in Salesforce"""
+    """Create a new record in Salesforce.
+    
+    Args:
+        object_type: The Salesforce object type (e.g., 'Account', 'Contact', 'Opportunity', 'Lead')
+        data: Dictionary of field names and values for the new record.
+              Example: {"FirstName": "John", "LastName": "Doe", "Email": "john@example.com"}
+    
+    Returns:
+        JSON string with id (auto-generated), success status, and errors list (empty on success)
+    """
     global _id_counter
     
     # Initialize object type if it doesn't exist

@@ -3,16 +3,20 @@ import json
 import random
 
 def google_receive_membership_email() -> str:
-    """Receive a membership email notification for a new member organization
-The email includes:
-- Company name
-- Membership level (End User Supporter, Silver, Gold, Platinum, etc.)
-- Join date
-- Region (Standard, China, Korea)
-- Multiple contact types with their information:
-  - Primary contact (name, email, role)
-  - Technical contact (name, email, role)
-  - Marketing contact (name, email, role)
+    """Receive a membership email notification for a new member organization.
+    
+    Simulates receiving a new member notification email with randomized company
+    information, membership details, and contact information for primary,
+    technical, and marketing contacts.
+    
+    Returns:
+        JSON string with success status and email content including:
+        - company_name: Organization name
+        - membership_level: Tier (End User Supporter, Silver, Gold, Platinum)
+        - join_date: ISO format date (YYYY-MM-DD)
+        - region: Geographic region (Standard, China, Korea)
+        - end_user_qualified: Boolean indicating end user status
+        - contacts: Dict with primary, technical, and marketing contact details
     """
     
     # Random data pools
@@ -85,7 +89,18 @@ The email includes:
 _mock_sheets = {}
 
 def google_sheets_append(sheet_id: str, range: str, values: list) -> str:
-    """Append rows to a Google Sheet"""
+    """Append rows to a Google Sheet.
+    
+    Args:
+        sheet_id: The ID of the Google Sheet
+        range: The A1 notation range (e.g., 'Sheet1!A1' or 'A1:B10')
+        values: List of rows to append, where each row is a list of values
+                Example: [["Name", "Email"], ["John", "john@example.com"]]
+    
+    Returns:
+        JSON string with success status, confirmation message, rows_added count,
+        and total_rows in the sheet
+    """
     # Initialize sheet if it doesn't exist
     if sheet_id not in _mock_sheets:
         _mock_sheets[sheet_id] = {}
@@ -106,7 +121,15 @@ def google_sheets_append(sheet_id: str, range: str, values: list) -> str:
 
 
 def google_sheets_read(sheet_id: str, range: str) -> str:
-    """Read data from a Google Sheet"""
+    """Read data from a Google Sheet.
+    
+    Args:
+        sheet_id: The ID of the Google Sheet
+        range: The A1 notation range to read (e.g., 'Sheet1!A1:B10')
+    
+    Returns:
+        JSON string with success status, data (list of rows), and count of rows
+    """
     # Return empty if sheet doesn't exist
     if sheet_id not in _mock_sheets:
         return json.dumps({
@@ -147,7 +170,15 @@ _mock_groups = {
 }
 
 def google_groups_list_members(group_id: str) -> str:
-    """List all members of a Google Group"""
+    """List all members of a Google Group.
+    
+    Args:
+        group_id: The email address of the Google Group (e.g., 'engineering@company.com')
+    
+    Returns:
+        JSON string with success status, list of members with email and role,
+        count of members, and group_id
+    """
     if group_id not in _mock_groups:
         return json.dumps({
             "success": True,
@@ -165,7 +196,17 @@ def google_groups_list_members(group_id: str) -> str:
     })
 
 def google_groups_add_member(group_id: str, member_email: str, role: str = "MEMBER") -> str:
-    """Add a new member to a Google Group"""
+    """Add a new member to a Google Group.
+    
+    Args:
+        group_id: The email address of the Google Group (e.g., 'engineering@company.com')
+        member_email: The email address of the member to add
+        role: The member's role in the group (default: 'MEMBER'). Can be 'MEMBER', 'MANAGER', 'OWNER'
+    
+    Returns:
+        JSON string with success status, confirmation message, and action taken
+        (either 'added' for new members or 'updated' if member already existed)
+    """
     # Create group if it doesn't exist
     if group_id not in _mock_groups:
         _mock_groups[group_id] = {}
@@ -212,8 +253,20 @@ _mock_emails = [
 
 _email_counter = 3
 
-def gmail_send_email(to: str, subject: str, body: str, cc: list = None, attachments: list = None) -> str:
-    """Send an email via Gmail API"""
+def gmail_send_email(to: list, subject: str, body: str, cc: list = None, attachments: list = None) -> str:
+    """Send an email via Gmail API.
+    
+    Args:
+        to: List of primary recipient email addresses
+        subject: Email subject line
+        body: Plain text email body content
+        cc: Optional list of CC recipient email addresses (default: None)
+        attachments: Optional list of attachment file names (default: None)
+    
+    Returns:
+        JSON string with success status, confirmation message, email_id,
+        and recipients breakdown (to and cc lists)
+    """
     global _email_counter
     
     email_id = f"email_{_email_counter:03d}"
@@ -229,14 +282,26 @@ def gmail_send_email(to: str, subject: str, body: str, cc: list = None, attachme
     }
     _mock_emails.append(email)
     
+    to_str = ", ".join(to) if isinstance(to, list) else str(to)
+    cc_str = f" (CC: {', '.join(cc)})" if cc else ""
+    
     return json.dumps({
         "success": True,
-        "message": f"Sent email to {to}" + (f" (CC: {', '.join(cc)})" if cc else "") + f" with subject '{subject}'",
-        "email_id": email_id
+        "message": f"Sent email to {to_str}{cc_str} with subject '{subject}'",
+        "email_id": email_id,
+        "recipients": {
+            "to": to,
+            "cc": cc or []
+        }
     })
 
 def gmail_list_emails() -> str:
-    """List all emails"""
+    """List all sent emails from the Gmail mock.
+    
+    Returns:
+        JSON string with success status, list of all emails with their details,
+        and count of total emails
+    """
     return json.dumps({
         "success": True,
         "emails": _mock_emails,

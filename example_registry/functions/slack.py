@@ -57,7 +57,16 @@ _user_counter = 5
 
 
 def slack_create_channel(name: str, is_private: bool) -> str:
-    """Create a new Slack channel"""
+    """Create a new Slack channel.
+    
+    Args:
+        name: Channel name (must be unique)
+        is_private: Whether the channel should be private (true) or public (false)
+    
+    Returns:
+        JSON string with success status (false if name taken) and full channel details
+        including id, name, is_private, topic, members, and created timestamp
+    """
     global _channel_counter
     
     # Check if channel name already exists
@@ -85,7 +94,12 @@ def slack_create_channel(name: str, is_private: bool) -> str:
 
 
 def slack_list_channels() -> str:
-    """List all Slack channels"""
+    """List all Slack channels.
+    
+    Returns:
+        JSON string with success status and channels list (each with id, name,
+        is_private, and num_members)
+    """
     channels = [
         {
             "id": ch["id"],
@@ -99,7 +113,15 @@ def slack_list_channels() -> str:
 
 
 def slack_get_channel_info(channel_id: str) -> str:
-    """Get detailed information about a Slack channel"""
+    """Get detailed information about a Slack channel.
+    
+    Args:
+        channel_id: The channel ID (e.g., 'C001')
+    
+    Returns:
+        JSON string with success status (false if not found) and complete channel details
+        including id, name, is_private, topic, members list, and created timestamp
+    """
     if channel_id not in _mock_channels:
         return json.dumps({"success": False, "error": "channel_not_found"})
     
@@ -110,7 +132,16 @@ def slack_get_channel_info(channel_id: str) -> str:
 
 
 def slack_invite_to_channel(channel_id: str, user_ids: list) -> str:
-    """Invite users to a Slack channel"""
+    """Invite users to a Slack channel.
+    
+    Args:
+        channel_id: The channel ID to invite users to
+        user_ids: List of user IDs to invite
+    
+    Returns:
+        JSON string with success status and three lists: invited (newly added users),
+        already_in_channel (users already in channel), and not_found (invalid user IDs)
+    """
     if channel_id not in _mock_channels:
         return json.dumps({"success": False, "error": "channel_not_found"})
     
@@ -137,7 +168,15 @@ def slack_invite_to_channel(channel_id: str, user_ids: list) -> str:
 
 
 def slack_remove_user_from_channel(channel_id: str, user_id: str) -> str:
-    """Remove a user from a Slack channel"""
+    """Remove a user from a Slack channel.
+    
+    Args:
+        channel_id: The channel ID to remove user from
+        user_id: The user ID to remove
+    
+    Returns:
+        JSON string with success status (false if channel not found or user not in channel)
+    """
     if channel_id not in _mock_channels:
         return json.dumps({"success": False, "error": "channel_not_found"})
     
@@ -150,7 +189,17 @@ def slack_remove_user_from_channel(channel_id: str, user_id: str) -> str:
 
 
 def slack_send_message(channel_id: str, text: str, blocks: dict = None) -> str:
-    """Send a message to a Slack channel"""
+    """Send a message to a Slack channel.
+    
+    Args:
+        channel_id: The channel ID to send the message to
+        text: Plain text message content
+        blocks: Optional Block Kit blocks for rich message formatting
+    
+    Returns:
+        JSON string with success status (false if channel not found), channel ID,
+        timestamp, and full message object
+    """
     if channel_id not in _mock_channels:
         return json.dumps({"success": False, "error": "channel_not_found"})
     
@@ -175,7 +224,16 @@ def slack_send_message(channel_id: str, text: str, blocks: dict = None) -> str:
 
 
 def slack_list_messages(channel_id: str, limit: int = 10) -> str:
-    """List recent messages in a Slack channel"""
+    """List recent messages in a Slack channel.
+    
+    Args:
+        channel_id: The channel ID to retrieve messages from
+        limit: Maximum number of recent messages to return (default: 10)
+    
+    Returns:
+        JSON string with success status (false if channel not found), messages list,
+        and has_more flag indicating if there are additional messages
+    """
     if channel_id not in _mock_channels:
         return json.dumps({"success": False, "error": "channel_not_found"})
     
@@ -189,7 +247,12 @@ def slack_list_messages(channel_id: str, limit: int = 10) -> str:
 
 
 def slack_list_users() -> str:
-    """List all users in the Slack workspace"""
+    """List all users in the Slack workspace.
+    
+    Returns:
+        JSON string with success status and members list (each user includes id, name,
+        real_name, email, and is_admin flag)
+    """
     users = list(_mock_users.values())
     return json.dumps({
         "success": True,
@@ -198,7 +261,15 @@ def slack_list_users() -> str:
 
 
 def slack_get_user_info(user_id: str) -> str:
-    """Get detailed information about a Slack user"""
+    """Get detailed information about a Slack user.
+    
+    Args:
+        user_id: The user ID to retrieve (e.g., 'U001')
+    
+    Returns:
+        JSON string with success status (false if not found) and complete user details
+        including id, name, real_name, email, and is_admin flag
+    """
     if user_id not in _mock_users:
         return json.dumps({"success": False, "error": "user_not_found"})
     
@@ -209,17 +280,19 @@ def slack_get_user_info(user_id: str) -> str:
 
 
 def slack_invite_user(email: str, name: str, channels: list = None) -> str:
-    """Invite a user to the Slack workspace
+    """Invite a user to the Slack workspace (idempotent operation).
     
     In this mock, the user is immediately created and added to specified channels.
     
     Args:
         email: User's email address
         name: User's display name
-        channels: Optional list of channel IDs to add the user to
+        channels: Optional list of channel IDs to add the user to (default: None)
     
     Returns:
-        JSON with success status and user details
+        JSON string with success status, invited flag, user details (id, name, real_name,
+        email, is_admin), channels_joined list, channels_not_found list, and confirmation
+        message. If user already exists, returns already_invited flag
     """
     global _user_counter
     

@@ -7,12 +7,16 @@ import time
 _member_desk_invitations = []
 
 def member_desk_invite(email: str, name: str, role: str) -> str:
-    """Invite a contact to CNCF Member Desk
+    """Invite a contact to CNCF Member Desk (idempotent operation).
     
     Args:
         email: Contact's email address
-        name: Contact's full name
+        name: Contact's full name  
         role: Contact's role (Primary, Technical, Marketing)
+    
+    Returns:
+        JSON string with success status, invitation details including invitation_link,
+        and confirmation message. If already invited, returns already_invited flag
     """
     # Check if already invited
     for invitation in _member_desk_invitations:
@@ -46,7 +50,12 @@ def member_desk_invite(email: str, name: str, role: str) -> str:
     })
 
 def member_desk_list_invitations() -> str:
-    """List all Member Desk invitations"""
+    """List all Member Desk invitations.
+    
+    Returns:
+        JSON string with success status, invitations list (each with email, name, role,
+        invited_at, status, invitation_link), and total count
+    """
     return json.dumps({
         "success": True,
         "invitations": _member_desk_invitations,
@@ -54,7 +63,14 @@ def member_desk_list_invitations() -> str:
     })
 
 def member_desk_accept_invitation(email: str) -> str:
-    """Mark a Member Desk invitation as accepted (for testing)"""
+    """Mark a Member Desk invitation as accepted (for testing purposes).
+    
+    Args:
+        email: Email address of the invitation to accept
+    
+    Returns:
+        JSON string with success status (false if invitation not found) and confirmation message
+    """
     for invitation in _member_desk_invitations:
         if invitation["email"] == email:
             invitation["status"] = "accepted"
@@ -70,7 +86,15 @@ def member_desk_accept_invitation(email: str) -> str:
     })
 
 def member_desk_get_invitation_status(email: str) -> str:
-    """Get the status of a Member Desk invitation"""
+    """Get the status of a Member Desk invitation.
+    
+    Args:
+        email: Email address of the invitation to check
+    
+    Returns:
+        JSON string with success status (false if not found) and full invitation details
+        including email, name, role, invited_at, status, and invitation_link
+    """
     for invitation in _member_desk_invitations:
         if invitation["email"] == email:
             return json.dumps({

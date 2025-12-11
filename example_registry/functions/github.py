@@ -106,7 +106,18 @@ def _generate_sha(content: str) -> str:
 
 
 def github_create_branch(owner: str, repo: str, branch_name: str, base_sha: str) -> str:
-    """Create a new branch in a GitHub repository"""
+    """Create a new branch in a GitHub repository.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        branch_name: Name for the new branch
+        base_sha: SHA of the commit to branch from. If not found, uses default branch
+    
+    Returns:
+        JSON string with success status (false if repo not found, branch exists, or base not found),
+        ref (e.g., 'refs/heads/branch-name'), sha, and object details
+    """
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
@@ -172,7 +183,20 @@ def github_create_branch(owner: str, repo: str, branch_name: str, base_sha: str)
 
 
 def github_commit_file(owner: str, repo: str, path: str, content: str, message: str, branch: str) -> str:
-    """Commit a file to a GitHub repository"""
+    """Commit a file to a GitHub repository.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        path: File path in repository (e.g., 'src/main.py' or 'README.md')
+        content: File content as string
+        message: Commit message
+        branch: Branch name to commit to
+    
+    Returns:
+        JSON string with success status (false if repo or branch not found), content details
+        (name, path, sha, size), and commit details (sha, message, author)
+    """
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
@@ -216,7 +240,20 @@ def github_commit_file(owner: str, repo: str, path: str, content: str, message: 
 
 
 def github_create_pr(owner: str, repo: str, title: str, head: str, base: str, body: str) -> str:
-    """Create a pull request in GitHub"""
+    """Create a pull request in GitHub.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        title: Pull request title
+        head: Source branch name (branch with changes)
+        base: Target branch name (branch to merge into)
+        body: Pull request description
+    
+    Returns:
+        JSON string with success status (false if repo/branches not found), PR number,
+        state, title, html_url, user, head/base details, body, and timestamps
+    """
     global _pr_counter
     
     repo_full_name = f"{owner}/{repo}"
@@ -272,7 +309,16 @@ def github_create_pr(owner: str, repo: str, title: str, head: str, base: str, bo
 
 
 def github_list_branches(owner: str, repo: str) -> str:
-    """List all branches in a GitHub repository"""
+    """List all branches in a GitHub repository.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+    
+    Returns:
+        JSON string with success status (false if repo not found) and branches list
+        (each with name, commit sha/url, and protected flag)
+    """
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
@@ -294,7 +340,17 @@ def github_list_branches(owner: str, repo: str) -> str:
 
 
 def github_list_prs(owner: str, repo: str, state: str = "open") -> str:
-    """List pull requests in a GitHub repository"""
+    """List pull requests in a GitHub repository.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        state: Filter by state: 'open', 'closed', or 'all' (default: 'open')
+    
+    Returns:
+        JSON string with success status (false if repo not found), pull_requests list,
+        and total count
+    """
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
@@ -310,7 +366,18 @@ def github_list_prs(owner: str, repo: str, state: str = "open") -> str:
 
 
 def github_get_file(owner: str, repo: str, path: str, branch: str) -> str:
-    """Get file content from a GitHub repository"""
+    """Get file content from a GitHub repository.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        path: File path in repository (e.g., 'src/main.py')
+        branch: Branch name to read from
+    
+    Returns:
+        JSON string with success status (false if repo/branch/file not found),
+        name, path, sha, size, content, and encoding
+    """
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:
@@ -339,7 +406,18 @@ def github_get_file(owner: str, repo: str, path: str, branch: str) -> str:
 
 
 def github_merge_pr(owner: str, repo: str, pr_number: int, commit_message: str = None) -> str:
-    """Merge a pull request"""
+    """Merge a pull request.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        pr_number: Pull request number to merge
+        commit_message: Optional custom merge commit message (default: None)
+    
+    Returns:
+        JSON string with success status (false if repo/PR not found or PR not open),
+        merged flag, confirmation message, and merge SHA
+    """
     repo_full_name = f"{owner}/{repo}"
     
     if repo_full_name not in _mock_repos:

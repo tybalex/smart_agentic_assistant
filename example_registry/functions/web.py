@@ -46,14 +46,16 @@ import os
 
 
 def firecrawl_search(query: str, limit: int = 5) -> str:
-    """Search the web using Firecrawl
+    """Search the web using Firecrawl.
     
     Args:
-        query: Search query
-        limit: Maximum number of results (default: 5)
+        query: Search query string
+        limit: Maximum number of search results to return (default: 5)
     
     Returns:
-        JSON with search results or error
+        JSON string with success status, query, limit, and results. Returns error
+        if FIRECRAWL_API_KEY environment variable is not set or if firecrawl-py
+        is not installed
     """
     # Get API key from parameter or environment
     key = os.getenv("FIRECRAWL_API_KEY")
@@ -99,13 +101,15 @@ def firecrawl_search(query: str, limit: int = 5) -> str:
 
 
 def tavily_search(query: str) -> str:
-    """Search the web using Tavily
+    """Search the web using Tavily.
     
     Args:
-        query: Search query
+        query: Search query string
     
     Returns:
-        JSON with search results or error
+        JSON string with success status, query, and results. Returns error if
+        TAVILY_API_KEY environment variable is not set or if tavily-python
+        is not installed
     """
     # Get API key from parameter or environment
     key = os.getenv("TAVILY_API_KEY")

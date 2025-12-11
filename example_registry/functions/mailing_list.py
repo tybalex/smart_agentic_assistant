@@ -12,7 +12,14 @@ _mailing_lists = {
 }
 
 def get_mailing_list(list_name: str) -> str:
-    """Get the members of a specific mailing list"""
+    """Get the members of a specific mailing list.
+    
+    Args:
+        list_name: Name of the mailing list (e.g., 'member', 'toc', 'marketing', 'chinese_member', 'end_user')
+    
+    Returns:
+        JSON string with success status, list_name, members (list of email addresses), and count
+    """
     if list_name not in _mailing_lists:
         return json.dumps({"success": False, "error": f"Mailing list '{list_name}' not found"})
     
@@ -24,7 +31,16 @@ def get_mailing_list(list_name: str) -> str:
     })
 
 def add_to_mailing_list(list_name: str, email: str) -> str:
-    """Add an email to a specific mailing list (idempotent)"""
+    """Add an email to a specific mailing list (idempotent operation).
+    
+    Args:
+        list_name: Name of the mailing list. Creates the list if it doesn't exist
+        email: Email address to add to the list
+    
+    Returns:
+        JSON string with success status, confirmation message, and action taken
+        ('added' for new email or 'already_exists' if email was already in list)
+    """
     if list_name not in _mailing_lists:
         # Create new list if it doesn't exist
         _mailing_lists[list_name] = set()
@@ -45,7 +61,16 @@ def add_to_mailing_list(list_name: str, email: str) -> str:
     })
 
 def remove_from_mailing_list(list_name: str, email: str) -> str:
-    """Remove an email from a specific mailing list"""
+    """Remove an email from a specific mailing list.
+    
+    Args:
+        list_name: Name of the mailing list
+        email: Email address to remove from the list
+    
+    Returns:
+        JSON string with success status, confirmation message, and action taken
+        ('removed' if email was found and removed, or 'not_found' if email wasn't in list)
+    """
     if list_name not in _mailing_lists:
         return json.dumps({"success": False, "error": f"Mailing list '{list_name}' not found"})
     
@@ -64,7 +89,12 @@ def remove_from_mailing_list(list_name: str, email: str) -> str:
     })
 
 def list_all_mailing_lists() -> str:
-    """List all available mailing lists and their member counts"""
+    """List all available mailing lists and their member counts.
+    
+    Returns:
+        JSON string with success status, list of mailing_lists (each with name and member_count),
+        and total count of lists
+    """
     lists_info = [
         {
             "name": list_name,
@@ -80,7 +110,14 @@ def list_all_mailing_lists() -> str:
     })
 
 def create_mailing_list(list_name: str) -> str:
-    """Create a new mailing list"""
+    """Create a new empty mailing list.
+    
+    Args:
+        list_name: Name for the new mailing list
+    
+    Returns:
+        JSON string with success status (false if list already exists) and confirmation message
+    """
     if list_name in _mailing_lists:
         return json.dumps({
             "success": False,
