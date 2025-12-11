@@ -15,7 +15,7 @@ from models import (
     HistoryEntry, HistorySummary, TokenBudget, TurnResult, ExecutionResult,
     SessionStatus, StepStatus, TextSpan, generate_id,
     ClarificationQuestion, ClarificationAnswer, ClarificationEntry,
-    RejectionFeedback, RejectionEntry, CompletedStep
+    RejectionFeedback, RejectionEntry, CompletedStep, CachedFunctionDetail
 )
 from session_manager import SessionManager
 from tool_client import ToolRegistryClient
@@ -25,7 +25,8 @@ from constant import (
     CLAUDE_MAX_OUTPUT_TOKENS,
     SUMMARIZATION_TEMPERATURE,
     TOKEN_ESTIMATION_DIVISOR,
-    MAX_CLARIFICATIONS_IN_CONTEXT
+    MAX_CLARIFICATIONS_IN_CONTEXT,
+    MAX_CACHED_FUNCTION_DETAILS
 )
 
 # Configure logging
@@ -505,10 +506,11 @@ Remember to identify exact text spans for each step."""
         # Format registry discovery results (from auto-executed calls this turn)
         registry_str = self._format_registry_results(registry_results or [])
         
+        # Format two-tier tool cache
+        discovered_functions_str = self._format_discovered_functions()
+        cached_details_str = self._format_cached_function_details()
+        
         system_prompt = f"""You are a continuous planning agent. Each turn, you evaluate the situation and decide the next action OR ask the user a clarification question.
-
-AVAILABLE TOOLS (from tool registry):
-{tools_context}
 
 CRITICAL CONSTRAINTS - YOU MUST FOLLOW THESE:
 - You can ONLY use tools listed above from the tool registry
@@ -524,6 +526,9 @@ REGISTRY DISCOVERY TOOLS (auto-executed, no approval needed):
 - registry/registry_list_category: List all functions in a category
 - registry/registry_get_function: Get full details of a specific function (ALWAYS use before calling a function!)
 These tools are executed automatically without user approval. Use them freely to discover what functions are available and their exact parameter names BEFORE proposing an actual action.
+
+IMPORTANT: Check DISCOVERED FUNCTIONS first! If you see a function name already listed there, you don't need to search for it again.
+Also check CACHED FUNCTION DETAILS - if a function's full details are already cached, you can use it immediately without calling registry_get_function.
 
 YOUR RESPONSIBILITIES:
 1. Evaluate progress toward the goal
@@ -544,7 +549,15 @@ IMPORTANT:
 - If stuck, explain what's blocking progress
 - Use EXACT parameter names as listed in AVAILABLE TOOLS - do not rename or remap parameters
 - ONLY use tools that exist in the registry - verify before proposing
-- WHEN UNCERTAIN, ASK - don't make assumptions that could waste time or cause errors"""
+- WHEN UNCERTAIN, ASK - don't make assumptions that could waste time or cause errors
+
+AVAILABLE TOOLS (from tool registry):
+{tools_context}
+
+{discovered_functions_str}
+
+{cached_details_str}
+"""
 
         user_message = f"""GOAL (your primary objective):
 {session.goal.original_text}
@@ -853,34 +866,202 @@ REMINDER:
         
         return "\n".join(parts)
     
+    def _format_discovered_functions(self) -> str:
+        """Format lightweight cache of discovered function names, grouped by category."""
+        session = self.current_session
+        if not session or not session.discovered_function_names:
+            return "No functions discovered yet. Use registry_search or registry_list_category to discover available functions."
+        
+        # Group by category
+        by_category: Dict[str, List[str]] = {}
+        for func_key in sorted(session.discovered_function_names):
+            if "/" in func_key:
+                category, name = func_key.split("/", 1)
+                if category not in by_category:
+                    by_category[category] = []
+                by_category[category].append(name)
+        
+        # Format grouped output
+        parts = [f"DISCOVERED FUNCTIONS ({len(session.discovered_function_names)} total):"]
+        for category in sorted(by_category.keys()):
+            functions = ", ".join(sorted(by_category[category]))
+            parts.append(f"- {category}: {functions}")
+        
+        return "\n".join(parts)
+    
+    def _format_cached_function_details(self) -> str:
+        """Format full details for recently used functions (LRU cache)."""
+        session = self.current_session
+        if not session or not session.cached_function_details:
+            return "No cached function details yet. Details are cached when you use registry_get_function or execute a function."
+        
+        parts = [f"CACHED FUNCTION DETAILS ({len(session.cached_function_details)} functions, max {MAX_CACHED_FUNCTION_DETAILS}):"]
+        parts.append("These are functions you've already retrieved details for or successfully executed.")
+        parts.append("")
+        
+        # Sort by last_used_turn (most recent first)
+        sorted_funcs = sorted(
+            session.cached_function_details.items(),
+            key=lambda x: x[1].last_used_turn,
+            reverse=True
+        )
+        
+        for func_key, cached in sorted_funcs:
+            parts.append(f"{func_key} (last used: turn {cached.last_used_turn}):")
+            details = cached.details
+            
+            # Description
+            desc = details.get("description", "No description")
+            parts.append(f"  Description: {desc}")
+            
+            # Parameters
+            params_info = details.get("parameters", {})
+            if params_info:
+                parts.append(f"  Parameters:")
+                for pname, pinfo in params_info.items():
+                    if isinstance(pinfo, dict):
+                        ptype = pinfo.get("type", "any")
+                        required = pinfo.get("required", False)
+                        default = pinfo.get("default")
+                        req_str = " (REQUIRED)" if required else f" (optional, default={default})"
+                        parts.append(f"    - {pname}: {ptype}{req_str}")
+                    else:
+                        parts.append(f"    - {pname}: {pinfo}")
+            else:
+                parts.append(f"  Parameters: None")
+            
+            parts.append("")
+        
+        return "\n".join(parts)
+    
     # ===================
     # Action Execution
     # ===================
+    
+    def _enforce_function_cache_limit(self) -> None:
+        """Enforce LRU limit on cached function details."""
+        session = self.current_session
+        if not session:
+            return
+        
+        # Check if we're over the limit
+        if len(session.cached_function_details) <= MAX_CACHED_FUNCTION_DETAILS:
+            return
+        
+        # Sort by last_used_turn (ascending) to find least recently used
+        sorted_cache = sorted(
+            session.cached_function_details.items(),
+            key=lambda x: x[1].last_used_turn
+        )
+        
+        # Keep only the most recent MAX_CACHED_FUNCTION_DETAILS
+        to_keep = dict(sorted_cache[-MAX_CACHED_FUNCTION_DETAILS:])
+        evicted = len(session.cached_function_details) - len(to_keep)
+        
+        session.cached_function_details = to_keep
+        logger.info(f"LRU evicted {evicted} cached function(s), kept {len(to_keep)}")
+    
+    def _update_function_cache_after_use(self, tool_category: str, tool_name: str) -> None:
+        """Update cached function details after successful tool execution."""
+        session = self.current_session
+        if not session:
+            return
+        
+        func_key = f"{tool_category}/{tool_name}"
+        
+        # If already cached, update last_used_turn
+        if func_key in session.cached_function_details:
+            session.cached_function_details[func_key].last_used_turn = session.budget.current_turn
+            logger.info(f"Updated last_used_turn for cached function {func_key}")
+        else:
+            # Fetch and cache the details since we just used it successfully
+            result = self.tool_client.registry_get_function(tool_name)
+            if result.get("success"):
+                details = result.get("result", {})
+                session.cached_function_details[func_key] = CachedFunctionDetail(
+                    category=tool_category,
+                    name=tool_name,
+                    details=details,
+                    last_used_turn=session.budget.current_turn
+                )
+                self._enforce_function_cache_limit()
+                logger.info(f"Cached function details after successful use: {func_key}")
     
     def _execute_registry_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a registry meta-tool (search, list_category, get_function).
         These tools help the agent discover available functions without loading all of them.
+        Also populates the session's two-tier tool cache.
         """
         logger.info(f"Executing registry meta-tool: {tool_name} with params: {parameters}")
+        session = self.current_session
         
         if tool_name == "registry_search":
             q = parameters.get("q", "")
             if not q:
                 return {"success": False, "error": "Missing required parameter 'q' for registry_search"}
-            return self.tool_client.registry_search(q)
+            result = self.tool_client.registry_search(q)
+            
+            # Cache discovered function names
+            if result.get("success") and "results" in result.get("result", {}):
+                for func in result["result"]["results"]:
+                    func_key = f"{func.get('category', 'unknown')}/{func.get('name', 'unknown')}"
+                    session.discovered_function_names.add(func_key)
+                logger.info(f"Added {len(result['result']['results'])} function names to discovery cache")
+            
+            return result
         
         elif tool_name == "registry_list_category":
             category = parameters.get("category", "")
             if not category:
                 return {"success": False, "error": "Missing required parameter 'category' for registry_list_category"}
-            return self.tool_client.registry_list_category(category)
+            result = self.tool_client.registry_list_category(category)
+            
+            # Cache discovered function names
+            if result.get("success") and "functions" in result.get("result", {}):
+                for func in result["result"]["functions"]:
+                    func_key = f"{category}/{func.get('name', 'unknown')}"
+                    session.discovered_function_names.add(func_key)
+                logger.info(f"Added {len(result['result']['functions'])} function names to discovery cache")
+            
+            return result
         
         elif tool_name == "registry_get_function":
             function_name = parameters.get("function_name", "")
             if not function_name:
                 return {"success": False, "error": "Missing required parameter 'function_name' for registry_get_function"}
-            return self.tool_client.registry_get_function(function_name)
+            
+            # Check cache first (category might not be in function_name, search by suffix match)
+            for func_key, cached in session.cached_function_details.items():
+                if cached.name == function_name:
+                    logger.info(f"Using cached function details for {function_name}")
+                    # Update last used turn for LRU
+                    cached.last_used_turn = session.budget.current_turn
+                    return {"success": True, "result": cached.details}
+            
+            # Not in cache, fetch from registry
+            result = self.tool_client.registry_get_function(function_name)
+            
+            # Cache the details if successful
+            if result.get("success"):
+                details = result.get("result", {})
+                category = details.get("category", "unknown")
+                func_key = f"{category}/{function_name}"
+                
+                # Store in cache
+                session.cached_function_details[func_key] = CachedFunctionDetail(
+                    category=category,
+                    name=function_name,
+                    details=details,
+                    last_used_turn=session.budget.current_turn
+                )
+                
+                # Enforce LRU limit
+                self._enforce_function_cache_limit()
+                
+                logger.info(f"Cached function details for {func_key}")
+            
+            return result
         
         else:
             return {"success": False, "error": f"Unknown registry tool: {tool_name}"}
@@ -931,6 +1112,10 @@ REMINDER:
                 action.tool_name,
                 action.parameters
             )
+            
+            # Update function cache after successful execution (non-registry tools)
+            if result.get("success"):
+                self._update_function_cache_after_use(action.tool_category, action.tool_name)
         
         # Update plan step status based on result
         if action.plan_step_id:

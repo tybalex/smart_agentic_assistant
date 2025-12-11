@@ -17,3 +17,6 @@ TOKEN_ESTIMATION_DIVISOR = 4  # Rough estimate: chars / 4 ≈ tokens
 # History Management
 MAX_CLARIFICATIONS_IN_CONTEXT = 10  # Number of recent clarification Q&As to include
 
+# Tool Discovery Cache
+MAX_CACHED_FUNCTION_DETAILS = 10  # LRU cache limit for detailed function specifications
+

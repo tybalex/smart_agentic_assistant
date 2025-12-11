@@ -190,22 +190,10 @@ class ToolRegistryClient:
                     "result": result_data
                 }
             
-            # Check if success is true
-            if not result_data.get("success"):
-                error_msg = result_data.get("error", result_data.get("message", "Unknown error"))
-                logger.error(f"Function returned success=false: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "result": result_data
-                }
-            
-            # Success!
-            logger.info(f"Function executed successfully")
-            return {
-                "success": True,
-                "result": result_data
-            }
+            # Pass through the API response directly (no additional wrapping)
+            # The API response already has "success", "result", and optionally "error"
+            logger.info(f"Function executed, success={result_data.get('success')}")
+            return result_data
             
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")

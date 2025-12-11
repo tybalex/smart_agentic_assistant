@@ -476,6 +476,32 @@ class HistorySummary:
 
 
 @dataclass
+class CachedFunctionDetail:
+    """Cached detailed specification for a discovered tool function."""
+    category: str
+    name: str
+    details: Dict[str, Any]  # Full function spec (description, parameters, etc.)
+    last_used_turn: int  # For LRU eviction
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "category": self.category,
+            "name": self.name,
+            "details": self.details,
+            "last_used_turn": self.last_used_turn
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CachedFunctionDetail":
+        return cls(
+            category=data["category"],
+            name=data["name"],
+            details=data["details"],
+            last_used_turn=data["last_used_turn"]
+        )
+
+
+@dataclass
 class TokenBudget:
     """Track costs and prevent runaway execution."""
     max_tokens: int = DEFAULT_MAX_TOTAL_TOKENS  # Maximum total tokens to use (cumulative spend)
@@ -548,6 +574,10 @@ class Session:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     
+    # Tool Discovery Cache (two-tier system)
+    discovered_function_names: set = field(default_factory=set)  # Set of "category/function_name" strings
+    cached_function_details: Dict[str, CachedFunctionDetail] = field(default_factory=dict)  # Key: "category/function_name"
+    
     def get_progress(self) -> Dict[str, Any]:
         """Get overall session progress."""
         plan_progress = self.plan.get_progress()
@@ -575,7 +605,9 @@ class Session:
             "status": self.status.value,
             "agent_notes": self.agent_notes,
             "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat()
+            "updated_at": self.updated_at.isoformat(),
+            "discovered_function_names": list(self.discovered_function_names),
+            "cached_function_details": {k: v.to_dict() for k, v in self.cached_function_details.items()}
         }
     
     @classmethod
@@ -594,7 +626,9 @@ class Session:
             status=SessionStatus(data.get("status", "active")),
             agent_notes=data.get("agent_notes", []),
             created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(),
-            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now()
+            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(),
+            discovered_function_names=set(data.get("discovered_function_names", [])),
+            cached_function_details={k: CachedFunctionDetail.from_dict(v) for k, v in data.get("cached_function_details", {}).items()}
         )
 
 
