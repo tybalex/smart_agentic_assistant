@@ -732,8 +732,49 @@ def main():
             
             # Check session status
             if session.status == SessionStatus.COMPLETED:
-                st.success("🎉 Goal achieved!")
-                if st.button("🔄 New Session"):
+                # Celebration!
+                st.balloons()
+                
+                # Prominent success card
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); 
+                            color: white; 
+                            padding: 2rem; 
+                            border-radius: 1rem; 
+                            box-shadow: 0 10px 40px rgba(16, 185, 129, 0.3);
+                            margin-bottom: 1.5rem;">
+                    <div style="font-size: 3rem; text-align: center; margin-bottom: 0.5rem;">🎉</div>
+                    <div style="font-size: 1.75rem; font-weight: bold; text-align: center; margin-bottom: 0.5rem;">
+                        Goal Achieved!
+                    </div>
+                    <div style="text-align: center; opacity: 0.95; font-size: 1.1rem;">
+                        Mission accomplished in {session.budget.current_turn} turns
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Show summary stats
+                completed_count = len(session.completed_actions)
+                token_pct = (session.budget.used_tokens / session.budget.max_tokens * 100) if session.budget.max_tokens > 0 else 0
+                
+                col_stat1, col_stat2, col_stat3 = st.columns(3)
+                with col_stat1:
+                    st.metric("✅ Actions", completed_count)
+                with col_stat2:
+                    st.metric("🔄 Turns", session.budget.current_turn)
+                with col_stat3:
+                    st.metric("💬 Tokens", f"{token_pct:.0f}%")
+                
+                # Show completed objectives
+                if session.state.completed_objectives:
+                    st.markdown("### 🎯 What We Accomplished")
+                    for obj in session.state.completed_objectives[:8]:  # Show first 8
+                        st.markdown(f"✓ {obj}")
+                    if len(session.state.completed_objectives) > 8:
+                        st.caption(f"...and {len(session.state.completed_objectives) - 8} more")
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🔄 Start New Session", type="primary", use_container_width=True):
                     st.session_state.current_session = None
                     st.session_state.turn_result = None
                     st.session_state.input_text = ""
@@ -761,7 +802,7 @@ def main():
                 
                 if turn_result is None:
                     # Run a turn to get proposed action
-                    if st.button("▶️ Next Turn", type="primary", use_container_width=True):
+                    if st.button("▶️ Next Turn", type="primary", use_container_width=True, key="execute_next_turn"):
                         with st.spinner("Evaluating and planning..."):
                             turn_result = agent.run_turn()
                             st.session_state.turn_result = turn_result
@@ -770,12 +811,103 @@ def main():
                 
                 else:
                     # Show turn result
-                    if turn_result.status == "completed":
-                        st.success("🎉 Goal achieved!")
-                        st.markdown(f"**Reasoning:** {turn_result.reasoning}")
+                    # Defensive check for turn_result validity
+                    if not hasattr(turn_result, 'status') or turn_result.status is None:
+                        st.error("⚠️ Invalid turn result - clearing and retrying")
                         st.session_state.turn_result = None
-                        st.session_state.current_session = agent.current_session
                         st.rerun()
+                    
+                    elif turn_result.status == "completed":
+                        # Agent believes goal is achieved - ask user to confirm
+                        
+                        # Show agent's reasoning
+                        st.markdown(f"""
+                        <div class="state-card" style="border-left: 4px solid #10b981;">
+                            <div class="state-label">✅ Agent Assessment (Turn {session.budget.current_turn})</div>
+                            <div class="state-content">{turn_result.reasoning}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Show what was completed
+                        if session.state.completed_objectives:
+                            st.markdown("### 🎯 Completed Objectives")
+                            for obj in session.state.completed_objectives[:8]:
+                                st.markdown(f"✓ {obj}")
+                            if len(session.state.completed_objectives) > 8:
+                                st.caption(f"...and {len(session.state.completed_objectives) - 8} more")
+                        
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        
+                        # Confirmation prompt
+                        st.markdown("""
+                        <div style="background: #fef3c7; 
+                                    border-left: 4px solid #f59e0b; 
+                                    padding: 1.25rem; 
+                                    border-radius: 0.5rem; 
+                                    margin-bottom: 1rem;">
+                            <div style="color: #92400e; font-weight: 600; font-size: 1.1rem; margin-bottom: 0.5rem;">
+                                🤔 Do you agree the goal is achieved?
+                            </div>
+                            <div style="color: #78350f; font-size: 0.95rem;">
+                                The agent believes all objectives have been completed. Please confirm or provide feedback if more work is needed.
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Check if we're showing feedback input
+                        if st.session_state.get('show_completion_feedback', False):
+                            st.markdown("**✏️ What else needs to be done?**")
+                            completion_feedback = st.text_area(
+                                "Please describe what's missing or what should be done differently:",
+                                key="completion_feedback",
+                                placeholder="e.g., 'We still need to test the deployment' or 'The email template needs revision'",
+                                height=120
+                            )
+                            
+                            col_submit_fb, col_cancel_fb = st.columns(2)
+                            
+                            with col_submit_fb:
+                                if st.button("📤 Submit Feedback", type="primary", use_container_width=True, disabled=not completion_feedback, key="submit_completion_feedback"):
+                                    if completion_feedback:
+                                        # Add feedback as a clarification answer saying goal NOT complete
+                                        from models import ClarificationQuestion, ClarificationAnswer
+                                        feedback_question = ClarificationQuestion(
+                                            question="Is the goal achieved?",
+                                            context="Agent believes goal is complete but needs user confirmation",
+                                            options=[]
+                                        )
+                                        feedback_answer = ClarificationAnswer(
+                                            answer=f"No, not yet. {completion_feedback}"
+                                        )
+                                        agent.provide_clarification(feedback_question, feedback_answer.answer)
+                                        
+                                        st.session_state.turn_result = None
+                                        st.session_state.current_session = agent.current_session
+                                        st.session_state.show_completion_feedback = False
+                                        st.toast("Feedback submitted! Agent will continue...", icon="🔄")
+                                        st.rerun()
+                            
+                            with col_cancel_fb:
+                                if st.button("❌ Cancel", use_container_width=True, key="cancel_completion_feedback"):
+                                    st.session_state.show_completion_feedback = False
+                                    st.rerun()
+                        
+                        else:
+                            # Show confirmation buttons
+                            col_yes, col_no = st.columns(2)
+                            
+                            with col_yes:
+                                if st.button("✅ Yes, Goal Achieved!", type="primary", use_container_width=True, key="confirm_goal_achieved"):
+                                    # Mark session as completed and show celebration
+                                    agent.session_manager.complete_session()
+                                    st.session_state.turn_result = None
+                                    st.session_state.current_session = agent.current_session
+                                    st.rerun()
+                            
+                            with col_no:
+                                if st.button("✏️ No, Provide Feedback", use_container_width=True, key="provide_completion_feedback"):
+                                    st.session_state.show_completion_feedback = True
+                                    st.rerun()
                     
                     elif turn_result.status == "awaiting_approval":
                         # Check if this is a batch or single action
@@ -824,9 +956,25 @@ def main():
                             col_submit_rej, col_cancel_rej = st.columns(2)
                             
                             with col_submit_rej:
-                                if st.button("📤 Submit Feedback", type="primary", use_container_width=True, disabled=not rejection_feedback):
+                                if st.button("📤 Submit Feedback", type="primary", use_container_width=True, disabled=not rejection_feedback, key="submit_rejection_feedback"):
                                     if rejection_feedback:
-                                        agent.reject_action(action, rejection_feedback)
+                                        # Handle batch vs single action rejection
+                                        if is_batch:
+                                            # For batches, skip all actions and provide feedback as clarification
+                                            for act in batch.actions:
+                                                agent.skip_action(act)
+                                            # Provide feedback as a clarification to guide next steps
+                                            from models import ClarificationQuestion, ClarificationAnswer
+                                            feedback_question = ClarificationQuestion(
+                                                question="How should I adjust the proposed batch?",
+                                                context=f"User rejected batch of {len(batch.actions)} actions",
+                                                options=[]
+                                            )
+                                            agent.provide_clarification(feedback_question, rejection_feedback)
+                                        else:
+                                            # Single action - use reject_action
+                                            agent.reject_action(action, rejection_feedback)
+                                        
                                         st.session_state.turn_result = None
                                         st.session_state.current_session = agent.current_session
                                         st.session_state.show_rejection_input = False
@@ -834,7 +982,7 @@ def main():
                                         st.rerun()
                             
                             with col_cancel_rej:
-                                if st.button("❌ Cancel", use_container_width=True):
+                                if st.button("❌ Cancel", use_container_width=True, key="cancel_rejection_feedback"):
                                     st.session_state.show_rejection_input = False
                                     st.rerun()
                         else:
@@ -842,7 +990,7 @@ def main():
                             col_approve, col_reject, col_skip, col_abort = st.columns(4)
                             
                             with col_approve:
-                                if st.button("✅ Approve", type="primary", use_container_width=True):
+                                if st.button("✅ Approve", type="primary", use_container_width=True, key="approve_action"):
                                     with st.spinner("Executing..."):
                                         # Always use execute_batch (handles both single and multiple actions)
                                         batch_result = agent.execute_batch(batch)
@@ -857,19 +1005,25 @@ def main():
                                     st.rerun()
                             
                             with col_reject:
-                                if st.button("✏️ Reject with Feedback", use_container_width=True):
+                                if st.button("✏️ Reject with Feedback", use_container_width=True, key="show_rejection_input"):
                                     st.session_state.show_rejection_input = True
                                     st.rerun()
                             
                             with col_skip:
-                                if st.button("⏭️ Skip", use_container_width=True):
-                                    agent.skip_action(action)
+                                if st.button("⏭️ Skip", use_container_width=True, key="skip_action"):
+                                    # Handle batch vs single action skip
+                                    if is_batch:
+                                        # Skip all actions in batch
+                                        for act in batch.actions:
+                                            agent.skip_action(act)
+                                    else:
+                                        agent.skip_action(action)
                                     st.session_state.turn_result = None
                                     st.session_state.current_session = agent.current_session
                                     st.rerun()
                             
                             with col_abort:
-                                if st.button("🛑 Abort", use_container_width=True):
+                                if st.button("🛑 Abort", use_container_width=True, key="abort_session"):
                                     agent.abort_session()
                                     st.session_state.turn_result = None
                                     st.session_state.current_session = agent.current_session
@@ -963,6 +1117,32 @@ def main():
                         st.session_state.turn_result = None
                         st.session_state.current_session = agent.current_session
                         st.rerun()
+                    
+                    elif turn_result.status == "error":
+                        st.error("❌ Agent Error")
+                        st.markdown(f"**Reasoning:** {turn_result.reasoning}")
+                        if turn_result.error:
+                            st.code(turn_result.error, language=None)
+                        
+                        col_retry, col_abort_err = st.columns(2)
+                        with col_retry:
+                            if st.button("🔄 Try Again", type="primary", use_container_width=True, key="retry_after_error"):
+                                st.session_state.turn_result = None
+                                st.rerun()
+                        with col_abort_err:
+                            if st.button("🛑 Abort Session", use_container_width=True, key="abort_after_error"):
+                                agent.abort_session()
+                                st.session_state.turn_result = None
+                                st.session_state.current_session = agent.current_session
+                                st.rerun()
+                    
+                    else:
+                        # Unexpected status - clear and retry
+                        st.error(f"⚠️ Unexpected turn status: {turn_result.status}")
+                        st.markdown(f"**Reasoning:** {turn_result.reasoning if hasattr(turn_result, 'reasoning') else 'N/A'}")
+                        if st.button("🔄 Clear and Retry", key="clear_unexpected_status"):
+                            st.session_state.turn_result = None
+                            st.rerun()
             
             st.divider()
             
