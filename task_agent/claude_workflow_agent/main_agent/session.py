@@ -1,0 +1,143 @@
+"""
+Workflow Session Management
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+from pathlib import Path
+
+
+@dataclass
+class Message:
+    """A message in the conversation"""
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    tool_results: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ExecutionAttempt:
+    """Record of a workflow execution attempt"""
+    attempt_number: int
+    timestamp: str
+    status: str  # "completed", "failed", "needs_clarification"
+    trace: Dict[str, Any]
+    improvements_made: Optional[str] = None
+
+
+@dataclass
+class WorkflowSession:
+    """
+    Manages a workflow development session.
+    Tracks conversation, executions, and iterations.
+    """
+    workflow_name: str
+    workflow_path: Optional[str] = None
+    tools_path: Optional[str] = None
+    
+    # Conversation history
+    messages: List[Message] = field(default_factory=list)
+    
+    # Execution history
+    execution_attempts: List[ExecutionAttempt] = field(default_factory=list)
+    
+    # Discovered tools (cached for session)
+    available_tools: Optional[Dict[str, Any]] = None
+    selected_tools: List[Dict[str, str]] = field(default_factory=list)
+    
+    # Session metadata
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    iteration_count: int = 0
+    max_iterations: int = 5
+    
+    def add_user_message(self, content: str):
+        """Add user message to conversation"""
+        self.messages.append(Message(
+            role="user",
+            content=content
+        ))
+    
+    def add_assistant_message(
+        self,
+        content: str,
+        tool_calls: List[Dict[str, Any]] = None,
+        tool_results: List[Dict[str, Any]] = None
+    ):
+        """Add assistant message to conversation"""
+        self.messages.append(Message(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls or [],
+            tool_results=tool_results or []
+        ))
+    
+    def add_execution_attempt(
+        self,
+        status: str,
+        trace: Dict[str, Any],
+        improvements: Optional[str] = None
+    ):
+        """Record an execution attempt"""
+        self.iteration_count += 1
+        self.execution_attempts.append(ExecutionAttempt(
+            attempt_number=self.iteration_count,
+            timestamp=datetime.now().isoformat(),
+            status=status,
+            trace=trace,
+            improvements_made=improvements
+        ))
+    
+    def get_last_execution(self) -> Optional[ExecutionAttempt]:
+        """Get most recent execution attempt"""
+        if not self.execution_attempts:
+            return None
+        return self.execution_attempts[-1]
+    
+    def is_workflow_ready(self) -> bool:
+        """Check if workflow is ready (successfully executed)"""
+        last = self.get_last_execution()
+        return last is not None and last.status == "completed"
+    
+    def can_iterate(self) -> bool:
+        """Check if we can do more iterations"""
+        return self.iteration_count < self.max_iterations
+    
+    def get_conversation_context(self) -> List[Dict[str, str]]:
+        """
+        Get conversation history in Claude API format.
+        
+        Returns:
+            List of {role, content} dicts
+        """
+        context = []
+        for msg in self.messages:
+            context.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+        return context
+    
+    def summary(self) -> str:
+        """Get session summary"""
+        lines = [
+            f"Workflow: {self.workflow_name}",
+            f"Path: {self.workflow_path or 'Not created yet'}",
+            f"Iterations: {self.iteration_count}/{self.max_iterations}",
+            f"Messages: {len(self.messages)}",
+        ]
+        
+        if self.execution_attempts:
+            last = self.get_last_execution()
+            lines.append(f"Last execution: {last.status}")
+        
+        if self.is_workflow_ready():
+            lines.append("Status: ✅ Ready")
+        elif not self.can_iterate():
+            lines.append("Status: ⚠️  Max iterations reached")
+        else:
+            lines.append("Status: 🔄 In progress")
+        
+        return "\n".join(lines)

@@ -881,8 +881,8 @@ def main():
                                         )
                                         agent.provide_clarification(feedback_question, feedback_answer.answer)
                                         
-                                        st.session_state.turn_result = None
-                                        st.session_state.current_session = agent.current_session
+                        st.session_state.turn_result = None
+                        st.session_state.current_session = agent.current_session
                                         st.session_state.show_completion_feedback = False
                                         st.toast("Feedback submitted! Agent will continue...", icon="🔄")
                                         st.rerun()
@@ -907,7 +907,7 @@ def main():
                             with col_no:
                                 if st.button("✏️ No, Provide Feedback", use_container_width=True, key="provide_completion_feedback"):
                                     st.session_state.show_completion_feedback = True
-                                    st.rerun()
+                        st.rerun()
                     
                     elif turn_result.status == "awaiting_approval":
                         # Check if this is a batch or single action
@@ -939,7 +939,7 @@ def main():
                         if is_batch:
                             st.markdown(render_batch_card(batch), unsafe_allow_html=True)
                         else:
-                            st.markdown(render_action_card(action), unsafe_allow_html=True)
+                        st.markdown(render_action_card(action), unsafe_allow_html=True)
                         
                         # Check if we're in rejection mode
                         if st.session_state.get('show_rejection_input', False):
@@ -973,7 +973,7 @@ def main():
                                             agent.provide_clarification(feedback_question, rejection_feedback)
                                         else:
                                             # Single action - use reject_action
-                                            agent.reject_action(action, rejection_feedback)
+                                        agent.reject_action(action, rejection_feedback)
                                         
                                         st.session_state.turn_result = None
                                         st.session_state.current_session = agent.current_session
@@ -1017,7 +1017,7 @@ def main():
                                         for act in batch.actions:
                                             agent.skip_action(act)
                                     else:
-                                        agent.skip_action(action)
+                                    agent.skip_action(action)
                                     st.session_state.turn_result = None
                                     st.session_state.current_session = agent.current_session
                                     st.rerun()
@@ -1142,7 +1142,7 @@ def main():
                         st.markdown(f"**Reasoning:** {turn_result.reasoning if hasattr(turn_result, 'reasoning') else 'N/A'}")
                         if st.button("🔄 Clear and Retry", key="clear_unexpected_status"):
                             st.session_state.turn_result = None
-                            st.rerun()
+                        st.rerun()
             
             st.divider()
             

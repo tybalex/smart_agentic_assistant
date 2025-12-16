@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import webbrowser
+import logging
 from typing import Dict, List, Any, Optional
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -18,6 +19,12 @@ from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+
+# Suppress verbose logging from httpx and mcp
+logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("mcp").setLevel(logging.ERROR)
+logging.getLogger("mcp.client").setLevel(logging.ERROR)
+logging.getLogger("mcp.client.streamable_http").setLevel(logging.ERROR)
 
 
 # ==================== OAuth Support ====================
@@ -143,7 +150,7 @@ class MCPToolRegistry:
         Returns:
             List of discovered tools
         """
-        print(f"🔗 Connecting to {server_name} at {server_url}...")
+        print(f"  🔗 Connecting to {server_name}...", end=" ", flush=True)
         
         # Start OAuth callback server
         callback_server = CallbackServer(port=3030)
@@ -157,7 +164,7 @@ class MCPToolRegistry:
                 callback_server.stop()
         
         async def redirect_handler(authorization_url: str) -> None:
-            print(f"Opening browser for {server_name} authorization...")
+            # Silently open browser - user will see it open
             webbrowser.open(authorization_url)
         
         # Reuse or create token storage
@@ -184,36 +191,18 @@ class MCPToolRegistry:
         
         # Connect with streamable HTTP and discover tools immediately
         tools = []
-        print("📡 Opening StreamableHTTP transport connection with auth...")
         async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True) as custom_client:
             async with streamable_http_client(
                 url=server_url,
                 http_client=custom_client,
             ) as (read_stream, write_stream, get_session_id):
-                print("🤝 Initializing MCP session...")
                 async with ClientSession(read_stream, write_stream) as session:
-                    print("⚡ Starting session initialization...")
                     await session.initialize()
-                    print("✨ Session initialization complete!")
-                    
-                    print(f"\n✅ Connected to MCP server at {server_url}")
-                    if get_session_id:
-                        session_id = get_session_id()
-                        if session_id:
-                            print(f"Session ID: {session_id}")
-                    
-                    print(f"🔍 Discovering tools from {server_name}...")
                     
                     # List tools while session is open
                     tools_response = await session.list_tools()
                     
-                    print(f"\n📋 Processing {len(tools_response.tools)} tools...")
-                    for i, tool in enumerate(tools_response.tools, 1):
-                        print(f"\nTool {i}: {tool.name}")
-                        print(f"  Description: {tool.description}")
-                        print(f"  Input Schema: {tool.inputSchema}")
-                        print(f"  Output Schema: {getattr(tool, 'outputSchema', None)}")
-                        
+                    for tool in tools_response.tools:
                         tools.append({
                             "server": server_name,
                             "tool": tool.name,
@@ -222,7 +211,7 @@ class MCPToolRegistry:
                             "output_schema": getattr(tool, 'outputSchema', None)
                         })
                     
-                    print(f"\n✅ Captured {len(tools)} tools from {server_name}")
+                    print(f"✅ {len(tools)} tools")
         
         # Store tools (after all contexts have closed)
         self.tools_by_server[server_name] = tools
@@ -256,6 +245,8 @@ class MCPToolRegistry:
             Dict mapping server name to list of tools
         """
         print(f"🔍 Discovering tools from {len(self.server_configs)} servers...")
+        print(f"   (This will open browsers for OAuth authorization)")
+        print()
         
         for server_name, server_url in self.server_configs.items():
             try:
@@ -264,8 +255,14 @@ class MCPToolRegistry:
                 print(f"⚠️  Failed to discover tools from {server_name}: {e}")
                 self.tools_by_server[server_name] = []
         
+        # Summary
+        print()
+        for server_name, tools in self.tools_by_server.items():
+            print(f"  ✅ {server_name}: {len(tools)} tools")
+        
         total_tools = sum(len(tools) for tools in self.tools_by_server.values())
-        print(f"✅ Total tools discovered: {total_tools}")
+        print()
+        print(f"✅ Total: {total_tools} tools from {len(self.tools_by_server)} servers")
         
         return self.tools_by_server
     
