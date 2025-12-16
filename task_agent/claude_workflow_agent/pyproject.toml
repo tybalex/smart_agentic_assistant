@@ -1,0 +1,12 @@
+[project]
+name = "claude-workflow-agent"
+version = "0.1.0"
+description = "Two-agent system for test-driven workflow development"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.40.0",
+    "fastmcp==2.11.2",
+    "mcp>=1.24.0",
+    "python-dotenv>=1.0.0",
+]

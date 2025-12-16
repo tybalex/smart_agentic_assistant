@@ -1,0 +1,36 @@
+{
+  "mcp_servers": ["github", "slack", "gmail"],
+  "tools": [
+    {
+      "server": "github",
+      "tool": "create_user",
+      "description": "Create a new GitHub user account"
+    },
+    {
+      "server": "github",
+      "tool": "add_team_member",
+      "description": "Add user to a GitHub team"
+    },
+    {
+      "server": "github",
+      "tool": "get_user",
+      "description": "Get GitHub user information"
+    },
+    {
+      "server": "slack",
+      "tool": "create_user",
+      "description": "Create a Slack account"
+    },
+    {
+      "server": "slack",
+      "tool": "invite_to_channel",
+      "description": "Invite user to a Slack channel"
+    },
+    {
+      "server": "gmail",
+      "tool": "send_email",
+      "description": "Send an email message"
+    }
+  ],
+  "version": "1.0"
+}

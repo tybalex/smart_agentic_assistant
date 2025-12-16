@@ -15,3 +15,8 @@ task-agent = "app:main"
 
 [tool.uv]
 dev-dependencies = []
+
+[tool.uv.workspace]
+members = [
+    "claude_workflow_agent",
+]
