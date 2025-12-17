@@ -23,6 +23,7 @@ _discovered_tools_cache = None
 async def discover_tools() -> Dict[str, Any]:
     """
     Discover all available MCP tools from configured servers.
+    Uses in-memory cache within the same session to avoid redundant calls.
     
     Returns:
         Dict with: {
@@ -35,11 +36,12 @@ async def discover_tools() -> Dict[str, Any]:
     global _registry_cache, _discovered_tools_cache
     
     try:
-        # Use cached if available
+        # Use in-memory cache if available (within same session)
         if _discovered_tools_cache:
             return _discovered_tools_cache
         
-        # Create registry if needed
+        # Need to discover - create registry if needed
+        print("🔍 Discovering MCP tools...")
         if not _registry_cache:
             _registry_cache = await create_registry_from_config()
         
@@ -63,7 +65,7 @@ async def discover_tools() -> Dict[str, Any]:
             "total": len(all_tools)
         }
         
-        # Cache for session
+        # Cache for session (in-memory only)
         _discovered_tools_cache = result
         
         return result

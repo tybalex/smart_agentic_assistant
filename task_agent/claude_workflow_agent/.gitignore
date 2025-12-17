@@ -4,3 +4,6 @@ __pycache__
 *.pyc
 .DS_Store
 *workflows
+
+# MCP OAuth tokens (persistent across runs)
+.mcp_tokens/

@@ -5,10 +5,12 @@ Main Agent uses this to discover tools and select which ones to give to Executor
 
 import asyncio
 import os
+import json
 import threading
 import time
 import webbrowser
 import logging
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -30,7 +32,7 @@ logging.getLogger("mcp.client.streamable_http").setLevel(logging.ERROR)
 # ==================== OAuth Support ====================
 
 class InMemoryTokenStorage(TokenStorage):
-    """In-memory token storage for OAuth"""
+    """In-memory token storage for OAuth (legacy, use FileBasedTokenStorage instead)"""
     
     def __init__(self):
         self._tokens: OAuthToken | None = None
@@ -47,6 +49,64 @@ class InMemoryTokenStorage(TokenStorage):
     
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
         self._client_info = client_info
+
+
+class FileBasedTokenStorage(TokenStorage):
+    """Persistent file-based token storage for OAuth"""
+    
+    def __init__(self, server_name: str, storage_dir: str = ".mcp_tokens"):
+        self.server_name = server_name
+        self.storage_dir = Path(storage_dir)
+        self.storage_dir.mkdir(exist_ok=True)
+        
+        self.token_file = self.storage_dir / f"{server_name}_tokens.json"
+        self.client_info_file = self.storage_dir / f"{server_name}_client.json"
+    
+    async def get_tokens(self) -> OAuthToken | None:
+        """Load tokens from file"""
+        if not self.token_file.exists():
+            return None
+        
+        try:
+            with open(self.token_file, 'r') as f:
+                data = json.load(f)
+            return OAuthToken(**data)
+        except Exception as e:
+            logging.warning(f"Failed to load tokens for {self.server_name}: {e}")
+            return None
+    
+    async def set_tokens(self, tokens: OAuthToken) -> None:
+        """Save tokens to file"""
+        try:
+            # Use model_dump with mode='json' to handle special types
+            data = tokens.model_dump(mode='json')
+            with open(self.token_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logging.error(f"Failed to save tokens for {self.server_name}: {e}")
+    
+    async def get_client_info(self) -> OAuthClientInformationFull | None:
+        """Load client info from file"""
+        if not self.client_info_file.exists():
+            return None
+        
+        try:
+            with open(self.client_info_file, 'r') as f:
+                data = json.load(f)
+            return OAuthClientInformationFull(**data)
+        except Exception as e:
+            logging.warning(f"Failed to load client info for {self.server_name}: {e}")
+            return None
+    
+    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        """Save client info to file"""
+        try:
+            # Use model_dump with mode='json' to handle special types like AnyUrl
+            data = client_info.model_dump(mode='json')
+            with open(self.client_info_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logging.error(f"Failed to save client info for {self.server_name}: {e}")
 
 
 class CallbackHandler(BaseHTTPRequestHandler):
@@ -118,6 +178,17 @@ class CallbackServer:
             time.sleep(0.1)
         raise Exception("Timeout waiting for OAuth callback")
     
+    async def wait_for_callback_async(self, timeout=300):
+        """Async version of wait_for_callback"""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if self.callback_data["authorization_code"]:
+                return self.callback_data["authorization_code"]
+            elif self.callback_data["error"]:
+                raise Exception(f"OAuth error: {self.callback_data['error']}")
+            await asyncio.sleep(0.1)
+        raise Exception("Timeout waiting for OAuth callback")
+    
     def get_state(self):
         return self.callback_data["state"]
 
@@ -140,7 +211,24 @@ class MCPToolRegistry:
         """
         self.server_configs = server_configs
         self.tools_by_server: Dict[str, List[Dict[str, Any]]] = {}
-        self._token_storage: Dict[str, InMemoryTokenStorage] = {}  # Reuse OAuth tokens
+        self._token_storage: Dict[str, FileBasedTokenStorage] = {}  # Reuse OAuth tokens
+        self._callback_server: Optional[CallbackServer] = None  # Shared callback server
+    
+    def _ensure_callback_server(self):
+        """Ensure shared callback server is running and reset for new OAuth flow"""
+        if self._callback_server is None:
+            self._callback_server = CallbackServer(port=3030)
+            self._callback_server.start()
+        # Always reset callback data for next OAuth flow
+        self._callback_server.callback_data["authorization_code"] = None
+        self._callback_server.callback_data["state"] = None
+        self._callback_server.callback_data["error"] = None
+    
+    def _stop_callback_server(self):
+        """Stop shared callback server"""
+        if self._callback_server is not None:
+            self._callback_server.stop()
+            self._callback_server = None
     
     async def connect_and_discover(self, server_name: str, server_url: str) -> List[Dict[str, Any]]:
         """
@@ -152,26 +240,33 @@ class MCPToolRegistry:
         """
         print(f"  🔗 Connecting to {server_name}...", end=" ", flush=True)
         
-        # Start OAuth callback server
-        callback_server = CallbackServer(port=3030)
-        callback_server.start()
+        # Use shared callback server
+        self._ensure_callback_server()
         
         async def callback_handler() -> tuple[str, str | None]:
             try:
-                auth_code = callback_server.wait_for_callback(timeout=300)
-                return auth_code, callback_server.get_state()
-            finally:
-                callback_server.stop()
+                auth_code = await self._callback_server.wait_for_callback_async(timeout=120)
+                return auth_code, self._callback_server.get_state()
+            except Exception as e:
+                print(f"\n❌ OAuth callback failed: {e}")
+                raise
         
         async def redirect_handler(authorization_url: str) -> None:
-            # Silently open browser - user will see it open
+            # Open browser for OAuth - print URL in case browser doesn't open
+            print(f"\n🌐 Opening browser for OAuth...")
+            print(f"   If browser doesn't open, visit: {authorization_url[:80]}...")
             webbrowser.open(authorization_url)
         
-        # Reuse or create token storage
+        # Reuse or create token storage (persistent to disk)
         if server_name not in self._token_storage:
-            self._token_storage[server_name] = InMemoryTokenStorage()
+            self._token_storage[server_name] = FileBasedTokenStorage(server_name)
         
         storage = self._token_storage[server_name]
+        
+        # Check if tokens exist (for debugging)
+        existing_tokens = await storage.get_tokens()
+        if existing_tokens:
+            print(f"[using cached tokens]", end=" ", flush=True)
         
         # OAuth client setup
         client_metadata = OAuthClientMetadata.model_validate({
@@ -191,27 +286,34 @@ class MCPToolRegistry:
         
         # Connect with streamable HTTP and discover tools immediately
         tools = []
-        async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True) as custom_client:
-            async with streamable_http_client(
-                url=server_url,
-                http_client=custom_client,
-            ) as (read_stream, write_stream, get_session_id):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    
-                    # List tools while session is open
-                    tools_response = await session.list_tools()
-                    
-                    for tool in tools_response.tools:
-                        tools.append({
-                            "server": server_name,
-                            "tool": tool.name,
-                            "description": tool.description or "",
-                            "input_schema": tool.inputSchema,
-                            "output_schema": getattr(tool, 'outputSchema', None)
-                        })
-                    
-                    print(f"✅ {len(tools)} tools")
+        try:
+            async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True, timeout=60.0) as custom_client:
+                async with streamable_http_client(
+                    url=server_url,
+                    http_client=custom_client,
+                ) as (read_stream, write_stream, get_session_id):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        
+                        # List tools while session is open
+                        tools_response = await session.list_tools()
+                        
+                        for tool in tools_response.tools:
+                            tools.append({
+                                "server": server_name,
+                                "tool": tool.name,
+                                "description": tool.description or "",
+                                "input_schema": tool.inputSchema,
+                                "output_schema": getattr(tool, 'outputSchema', None)
+                            })
+                        
+                        print(f"✅ {len(tools)} tools")
+        except asyncio.TimeoutError:
+            print(f"⏱️  Timeout")
+            raise Exception(f"Timeout connecting to {server_name}")
+        except Exception as e:
+            print(f"❌ Error: {str(e)[:50]}")
+            raise
         
         # Store tools (after all contexts have closed)
         self.tools_by_server[server_name] = tools
@@ -248,23 +350,27 @@ class MCPToolRegistry:
         print(f"   (This will open browsers for OAuth authorization)")
         print()
         
-        for server_name, server_url in self.server_configs.items():
-            try:
-                await self.discover_tools(server_name)
-            except Exception as e:
-                print(f"⚠️  Failed to discover tools from {server_name}: {e}")
-                self.tools_by_server[server_name] = []
-        
-        # Summary
-        print()
-        for server_name, tools in self.tools_by_server.items():
-            print(f"  ✅ {server_name}: {len(tools)} tools")
-        
-        total_tools = sum(len(tools) for tools in self.tools_by_server.values())
-        print()
-        print(f"✅ Total: {total_tools} tools from {len(self.tools_by_server)} servers")
-        
-        return self.tools_by_server
+        try:
+            for server_name, server_url in self.server_configs.items():
+                try:
+                    await self.discover_tools(server_name)
+                except Exception as e:
+                    print(f"⚠️  Failed to discover tools from {server_name}: {e}")
+                    self.tools_by_server[server_name] = []
+            
+            # Summary
+            print()
+            for server_name, tools in self.tools_by_server.items():
+                print(f"  ✅ {server_name}: {len(tools)} tools")
+            
+            total_tools = sum(len(tools) for tools in self.tools_by_server.values())
+            print()
+            print(f"✅ Total: {total_tools} tools from {len(self.tools_by_server)} servers")
+            
+            return self.tools_by_server
+        finally:
+            # Stop shared callback server after all discoveries
+            self._stop_callback_server()
     
     def get_all_tools_summary(self) -> str:
         """
@@ -337,9 +443,9 @@ class MCPToolRegistry:
         if not server_url:
             raise ValueError(f"Unknown server: {server_name}")
         
-        # Reuse token storage if available (avoids re-auth)
+        # Reuse token storage if available (avoids re-auth, persistent to disk)
         if server_name not in self._token_storage:
-            self._token_storage[server_name] = InMemoryTokenStorage()
+            self._token_storage[server_name] = FileBasedTokenStorage(server_name)
         
         storage = self._token_storage[server_name]
         
