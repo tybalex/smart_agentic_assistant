@@ -358,33 +358,34 @@ async def execute_workflow(workflow_path: str) -> Dict[str, Any]:
         print("✅ Workflow execution completed")
         
         # Check if execution was successful
-        from executor.models import SessionStatus
+        from executor.models import SessionStatus, ActionStatus
         success = trace.status == SessionStatus.COMPLETED
         
         # Build result with meaningful information
+        completed_steps = sum(1 for s in trace.steps if s.status == ActionStatus.COMPLETED)
+        failed_steps = sum(1 for s in trace.steps if s.status == ActionStatus.FAILED)
+        
         result = {
             "success": success,
             "status": trace.status.value,
             "session_id": trace.session_id,
             "total_steps": len(trace.steps),
-            "completed_steps": sum(1 for s in trace.steps if s.success),
-            "failed_steps": sum(1 for s in trace.steps if not s.success),
-            "total_tokens": trace.total_tokens_used,
-            "error_message": trace.error_message if trace.error_message else None,
-            "trace_summary": f"Executed {len(trace.steps)} steps, {sum(1 for s in trace.steps if s.success)} succeeded"
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+            "trace_summary": f"Executed {len(trace.steps)} steps, {completed_steps} succeeded"
         }
         
         # Include full trace in result for detailed inspection
         if not success:
-            result["details"] = "Workflow execution incomplete or failed. Check error_message and failed_steps."
+            result["details"] = "Workflow execution incomplete or failed. Check failed_steps."
             # Include last few steps for debugging
             if trace.steps:
                 result["last_steps"] = [
                     {
                         "step": s.step_number,
                         "description": s.description[:100] if s.description else "N/A",
-                        "success": s.success,
-                        "error": s.error_message
+                        "status": s.status.value,
+                        "error": s.error
                     }
                     for s in trace.steps[-3:]  # Last 3 steps
                 ]
