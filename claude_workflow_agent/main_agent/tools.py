@@ -30,7 +30,7 @@ async def discover_mcp_tools() -> Dict[str, Any]:
         Dict with: {
             "success": bool,
             "servers": List[str],
-            "tools": List[{server, tool, description}],
+            "tools": List[{server, tool, description, input_schema, output_schema}],
             "total": int
         }
     """
@@ -49,14 +49,16 @@ async def discover_mcp_tools() -> Dict[str, Any]:
         # Discover all tools
         tools_by_server = await _registry_cache.discover_all_tools()
         
-        # Flatten to simple list
+        # Flatten to simple list with ALL fields including schemas
         all_tools = []
         for server, tools in tools_by_server.items():
             for tool in tools:
                 all_tools.append({
                     "server": server,
                     "tool": tool["tool"],
-                    "description": tool["description"]
+                    "description": tool["description"],
+                    "input_schema": tool.get("input_schema"),
+                    "output_schema": tool.get("output_schema")
                 })
         
         result = {
@@ -245,12 +247,12 @@ async def run_mcp_tool(server: str, tool: str, parameters: Dict[str, Any]) -> Di
 def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     Select MCP tools for workflow and save to tools.json in same directory.
-    Fetches tool descriptions from MCP registry if not provided.
+    Fetches complete tool information (description, input_schema, output_schema) from MCP registry.
     
     Args:
         workflow_path: Path to workflow.md
         tool_list: List of {server, tool} dicts to include (MCP tools)
-                   Optional: can include "description" key
+                   Optional: can include "description", "input_schema", "output_schema"
     
     Returns:
         Dict with: {success: bool, tools_path: str, selected_count: int}
@@ -268,52 +270,71 @@ def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dic
         # Get unique servers
         servers = list(set(t["server"] for t in tool_list))
         
-        # Check if we need to fetch descriptions
-        need_descriptions = any(not t.get("description") for t in tool_list)
-        
-        enriched_tools = []
-        if need_descriptions:
-            # Try to use cached discovered tools from discover_mcp_tools()
-            if _discovered_tools_cache and _discovered_tools_cache.get("tools"):
-                # Build lookup map of (server, tool) -> description from cache
-                description_map = {}
-                for tool_info in _discovered_tools_cache["tools"]:
-                    key = (tool_info["server"], tool_info["tool"])
-                    description_map[key] = tool_info.get("description", "")
-                
-                # Enrich tool_list with descriptions from cache
-                for t in tool_list:
-                    key = (t["server"], t["tool"])
-                    description = t.get("description") or description_map.get(key, "")
-                    enriched_tools.append({
-                        "server": t["server"],
-                        "tool": t["tool"],
-                        "description": description
-                    })
-                print(f"✅ Enriched {len(enriched_tools)} tools with descriptions from cache")
-            else:
-                # No cache available - warn user
-                print("⚠️  Warning: Tool descriptions not available.")
-                print("   Call discover_mcp_tools() first to get tool descriptions,")
-                print("   or provide descriptions in the tool_list parameter.")
-                enriched_tools = [
-                    {
-                        "server": t["server"],
-                        "tool": t["tool"],
-                        "description": t.get("description", "")
-                    }
-                    for t in tool_list
-                ]
-        else:
-            # Descriptions already provided
+        # ALWAYS use discovered tools cache for complete tool information
+        # tool_list should just be {"server": "x", "tool": "y"}
+        if not _discovered_tools_cache or not _discovered_tools_cache.get("tools"):
+            print("⚠️  Warning: No discovered tools cache available.")
+            print("   Call discover_mcp_tools() first to get complete tool information.")
+            print("   Continuing with minimal tool definitions...")
+            
+            # No cache - create minimal tool definitions
             enriched_tools = [
                 {
                     "server": t["server"],
                     "tool": t["tool"],
-                    "description": t.get("description", "")
+                    "description": t.get("description", ""),
+                    "input_schema": t.get("input_schema"),
                 }
                 for t in tool_list
             ]
+        else:
+            # Build lookup map of (server, tool) -> full tool info from cache
+            tool_info_map = {}
+            for tool_info in _discovered_tools_cache["tools"]:
+                key = (tool_info["server"], tool_info["tool"])
+                tool_info_map[key] = tool_info
+            
+            # Get complete info for each requested tool from cache
+            enriched_tools = []
+            missing_tools = []
+            
+            for t in tool_list:
+                key = (t["server"], t["tool"])
+                cached_info = tool_info_map.get(key)
+                
+                if not cached_info:
+                    # Tool not found in discovery - warn but include it
+                    missing_tools.append(f"{t['server']}/{t['tool']}")
+                    enriched_tool = {
+                        "server": t["server"],
+                        "tool": t["tool"],
+                        "description": "",
+                        "input_schema": None
+                    }
+                else:
+                    # Use complete info from discovery cache
+                    enriched_tool = {
+                        "server": cached_info["server"],
+                        "tool": cached_info["tool"],
+                        "description": cached_info.get("description", ""),
+                        "input_schema": cached_info.get("input_schema"),
+                    }
+                    
+                    # Only include output_schema if present
+                    if cached_info.get("output_schema"):
+                        enriched_tool["output_schema"] = cached_info["output_schema"]
+                
+                enriched_tools.append(enriched_tool)
+            
+            # Report results
+            found_count = len(enriched_tools) - len(missing_tools)
+            print(f"✅ Enriched {found_count}/{len(enriched_tools)} tools with complete schemas from cache")
+            
+            if missing_tools:
+                print(f"⚠️  Warning: {len(missing_tools)} tool(s) not found in discovery:")
+                for tool in missing_tools:
+                    print(f"   - {tool}")
+                print("   These tools will have null schemas. Verify tool names are correct.")
         
         # Create tools.json format
         tools_config = {

@@ -59,16 +59,18 @@ class MainAgent:
         self.session = WorkflowSession(workflow_name=workflow_name)
         return self.session
     
-    async def chat(self, user_message: str) -> str:
+    async def chat(self, user_message: str) -> Dict[str, Any]:
         """
         Process user message and respond using native Anthropic tool calling.
-        May call tools autonomously to accomplish tasks.
+        Returns either a text response OR tool calls pending approval.
         
         Args:
             user_message: User's input
         
         Returns:
-            Assistant's response
+            Dict with either:
+            - {"type": "text", "content": str} - Final text response
+            - {"type": "tool_calls", "content": str, "tool_calls": [...], "assistant_content": [...]} - Tool calls awaiting approval
         """
         if not self.session:
             self.start_session("default")
@@ -83,112 +85,225 @@ class MainAgent:
         session_context = self._format_session_context()
         system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
         
-        # Track tool calls and results
-        response_text = ""
-        tool_calls_made = []
-        tool_results = []
+        # Use streaming for large token requests
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=MAX_TOKENS_PER_REQUEST,
+            temperature=AGENT_TEMPERATURE,
+            system=system_prompt,
+            messages=messages,
+            tools=ANTHROPIC_TOOLS,
+        ) as stream:
+            response = stream.get_final_message()
         
-        # Allow multiple tool calls in a row
-        max_tool_rounds = MAX_TOOL_ROUNDS
-        for round_num in range(max_tool_rounds):
-            # Use streaming for large token requests (required for >10k tokens / 10+ min requests)
-            with self.client.messages.stream(
-                model=self.model,
-                max_tokens=MAX_TOKENS_PER_REQUEST,
-                temperature=AGENT_TEMPERATURE,
-                system=system_prompt,
-                messages=messages,
-                tools=ANTHROPIC_TOOLS,
-            ) as stream:
-                # Accumulate the response from stream
-                response = stream.get_final_message()
+        # Debug in dev mode
+        if self.dev_mode:
+            print(f"\n{self.COLOR_TOOL}📝 Stop Reason: {response.stop_reason}{self.COLOR_RESET}")
+        
+        # Check if model wants to use tools
+        if response.stop_reason == "tool_use":
+            # Extract text and tool uses from response
+            text_content = ""
+            tool_uses = []
+            assistant_content = []
             
-            # Debug in dev mode
+            for block in response.content:
+                if block.type == "text":
+                    text_content += block.text
+                    assistant_content.append(block)
+                elif block.type == "tool_use":
+                    tool_uses.append(block)
+                    assistant_content.append(block)
+            
+            # Format tool calls for approval
+            tool_calls = []
+            for tool_use in tool_uses:
+                tool_calls.append({
+                    "tool": tool_use.name,
+                    "arguments": tool_use.input,
+                    "id": tool_use.id
+                })
+            
+            # Store the assistant content in session for later continuation
+            self.session.pending_assistant_content = assistant_content
+            
+            # Return tool calls for approval
+            return {
+                "type": "tool_calls",
+                "content": text_content,
+                "tool_calls": tool_calls
+            }
+        
+        else:
+            # Final text response
+            response_text = ""
+            for block in response.content:
+                if block.type == "text":
+                    response_text = block.text
+                    break
+            
+            # Save assistant message
+            self.session.add_assistant_message(
+                content=response_text,
+                tool_calls=[],
+                tool_results=[]
+            )
+            
+            return {
+                "type": "text",
+                "content": response_text
+            }
+    
+    async def continue_with_tool_results(self, approved_tools: List[Dict[str, Any]], rejected_tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Continue conversation after user approves/rejects tool calls.
+        
+        Args:
+            approved_tools: List of tool calls that were approved (with "tool", "arguments", "id")
+            rejected_tools: List of tool calls that were rejected (with "tool", "arguments", "id", "feedback")
+        
+        Returns:
+            Dict like chat() - either text response or more tool calls
+        """
+        if not self.session.pending_assistant_content:
+            return {
+                "type": "text",
+                "content": "Error: No pending tool calls to process."
+            }
+        
+        # Build conversation context
+        messages = self.session.get_conversation_context()
+        
+        # Add the assistant message with tool uses
+        messages.append({
+            "role": "assistant",
+            "content": self.session.pending_assistant_content
+        })
+        
+        # Execute approved tools and format results
+        tool_results_content = []
+        executed_tools = []
+        executed_results = []
+        
+        for tool_call in approved_tools:
+            # Show tool call in dev mode
             if self.dev_mode:
-                print(f"\n{self.COLOR_TOOL}📝 Stop Reason: {response.stop_reason}{self.COLOR_RESET}")
-            
-            # Check if model wants to use tools
-            if response.stop_reason == "tool_use":
-                # Extract all tool uses from response
-                assistant_content = []
-                tool_uses = []
-                
-                for block in response.content:
-                    if block.type == "text":
-                        assistant_content.append(block)
-                    elif block.type == "tool_use":
-                        tool_uses.append(block)
-                        assistant_content.append(block)
-                
-                # Execute each tool
-                tool_results_content = []
-                for tool_use in tool_uses:
-                    tool_call = {
-                        "tool": tool_use.name,
-                        "arguments": tool_use.input,
-                        "id": tool_use.id
-                    }
-                    
-                    # Show tool call in dev mode
-                    if self.dev_mode:
-                        self._print_dev_tool_call(tool_call)
-                    else:
-                        # In non-dev mode, show simple message for long-running tools
-                        if tool_call["tool"] == "execute_workflow":
-                            print()
-                            print("🔄 Executing workflow (this may take a moment)...")
-                    
-                    # Execute tool
-                    result = await self._execute_tool(
-                        tool_call["tool"],
-                        tool_call.get("arguments", {})
-                    )
-                    
-                    # Show result in dev mode
-                    if self.dev_mode:
-                        self._print_dev_tool_result(tool_call["tool"], result)
-                    
-                    tool_calls_made.append(tool_call)
-                    tool_results.append(result)
-                    
-                    # Format tool result for API
-                    tool_results_content.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use.id,
-                        "content": json.dumps(result)
-                    })
-                
-                # Add assistant message with tool uses
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_content
-                })
-                
-                # Add tool results
-                messages.append({
-                    "role": "user",
-                    "content": tool_results_content
-                })
-                
-                # Continue loop to let agent use the results
-                continue
-            
+                self._print_dev_tool_call(tool_call)
             else:
-                # Final response - extract text
-                for block in response.content:
-                    if block.type == "text":
-                        response_text = block.text
-                        break
-                break
+                # In non-dev mode, show simple message for long-running tools
+                if tool_call["tool"] == "execute_workflow":
+                    print()
+                    print("🔄 Executing workflow (this may take a moment)...")
+            
+            # Execute tool
+            result = await self._execute_tool(
+                tool_call["tool"],
+                tool_call.get("arguments", {})
+            )
+            
+            # Show result in dev mode
+            if self.dev_mode:
+                self._print_dev_tool_result(tool_call["tool"], result)
+            
+            executed_tools.append(tool_call)
+            executed_results.append(result)
+            
+            # Format for API
+            tool_results_content.append({
+                "type": "tool_result",
+                "tool_use_id": tool_call["id"],
+                "content": json.dumps(result)
+            })
         
-        # Save assistant message with tool calls/results
-        self.session.add_assistant_message(
-            content=response_text,
-            tool_calls=tool_calls_made,
-            tool_results=tool_results
-        )
+        # Add rejection messages for rejected tools
+        for tool_call in rejected_tools:
+            feedback = tool_call.get("feedback", "User rejected this tool call")
+            tool_results_content.append({
+                "type": "tool_result",
+                "tool_use_id": tool_call["id"],
+                "content": json.dumps({
+                    "success": False,
+                    "error": f"Tool call rejected by user: {feedback}"
+                }),
+                "is_error": True
+            })
         
-        return response_text
+        # Add tool results to messages
+        messages.append({
+            "role": "user",
+            "content": tool_results_content
+        })
+        
+        # Clear pending state
+        self.session.pending_assistant_content = None
+        
+        # Get next response from model
+        session_context = self._format_session_context()
+        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
+        
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=MAX_TOKENS_PER_REQUEST,
+            temperature=AGENT_TEMPERATURE,
+            system=system_prompt,
+            messages=messages,
+            tools=ANTHROPIC_TOOLS,
+        ) as stream:
+            response = stream.get_final_message()
+        
+        # Check if model wants more tools
+        if response.stop_reason == "tool_use":
+            # Extract text and tool uses
+            text_content = ""
+            tool_uses = []
+            assistant_content = []
+            
+            for block in response.content:
+                if block.type == "text":
+                    text_content += block.text
+                    assistant_content.append(block)
+                elif block.type == "tool_use":
+                    tool_uses.append(block)
+                    assistant_content.append(block)
+            
+            # Format tool calls
+            tool_calls = []
+            for tool_use in tool_uses:
+                tool_calls.append({
+                    "tool": tool_use.name,
+                    "arguments": tool_use.input,
+                    "id": tool_use.id
+                })
+            
+            # Store pending state
+            self.session.pending_assistant_content = assistant_content
+            
+            # Return for approval
+            return {
+                "type": "tool_calls",
+                "content": text_content,
+                "tool_calls": tool_calls
+            }
+        
+        else:
+            # Final response
+            response_text = ""
+            for block in response.content:
+                if block.type == "text":
+                    response_text = block.text
+                    break
+            
+            # Save to session
+            self.session.add_assistant_message(
+                content=response_text,
+                tool_calls=executed_tools,
+                tool_results=executed_results
+            )
+            
+            return {
+                "type": "text",
+                "content": response_text
+            }
     
     
     def _format_session_context(self) -> str:
