@@ -11,7 +11,7 @@ from anthropic import Anthropic
 
 from .prompts import MAIN_AGENT_SYSTEM_PROMPT
 from .session import WorkflowSession, Message
-from .tools import AVAILABLE_TOOLS
+from .tools import AVAILABLE_TOOLS, ANTHROPIC_TOOLS
 
 # Suppress verbose httpx logging
 logging.getLogger("httpx").setLevel(logging.ERROR)
@@ -49,7 +49,7 @@ class MainAgent:
     
     async def chat(self, user_message: str) -> str:
         """
-        Process user message and respond.
+        Process user message and respond using native Anthropic tool calling.
         May call tools autonomously to accomplish tasks.
         
         Args:
@@ -67,15 +67,11 @@ class MainAgent:
         # Build conversation context
         messages = self.session.get_conversation_context()
         
-        # Add tools description to system prompt
-        tools_desc = self._format_tools_description()
-        
         # Add session context to help agent avoid redundant actions
         session_context = self._format_session_context()
+        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
         
-        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + tools_desc + "\n\n" + session_context
-        
-        # Call Claude
+        # Track tool calls and results
         response_text = ""
         tool_calls_made = []
         tool_results = []
@@ -88,86 +84,86 @@ class MainAgent:
                 max_tokens=4000,
                 temperature=0.1,
                 system=system_prompt,
-                messages=messages
+                messages=messages,
+                tools=ANTHROPIC_TOOLS  # Native tool calling!
             )
-            
-            assistant_text = response.content[0].text
             
             # Debug in dev mode
             if self.dev_mode:
-                print(f"\n{self.COLOR_TOOL}📝 Raw LLM Response:{self.COLOR_RESET}")
-                print(f"{assistant_text[:300]}")
-                if len(assistant_text) > 300:
-                    print("...")
-                print()
+                print(f"\n{self.COLOR_TOOL}📝 Stop Reason: {response.stop_reason}{self.COLOR_RESET}")
             
-            # Check if response contains JSON (tool call or message)
-            parsed_response = self._parse_response(assistant_text)
-            
-            if parsed_response and parsed_response.get("action") == "call_tool":
-                # Tool call - execute it
-                tool_call = {
-                    "tool": parsed_response.get("tool"),
-                    "arguments": parsed_response.get("arguments", {})
-                }
+            # Check if model wants to use tools
+            if response.stop_reason == "tool_use":
+                # Extract all tool uses from response
+                assistant_content = []
+                tool_uses = []
                 
-                # Show tool call in dev mode
-                if self.dev_mode:
-                    self._print_dev_tool_call(tool_call)
-                else:
-                    # In non-dev mode, show simple message for user feedback
-                    # Especially important for long-running tools like execute_workflow
-                    if tool_call["tool"] == "execute_workflow":
-                        print()
-                        print("🔄 Executing workflow (this may take a moment)...")
+                for block in response.content:
+                    if block.type == "text":
+                        assistant_content.append(block)
+                    elif block.type == "tool_use":
+                        tool_uses.append(block)
+                        assistant_content.append(block)
                 
-                # Execute tool
-                result = await self._execute_tool(
-                    tool_call["tool"],
-                    tool_call.get("arguments", {})
-                )
+                # Execute each tool
+                tool_results_content = []
+                for tool_use in tool_uses:
+                    tool_call = {
+                        "tool": tool_use.name,
+                        "arguments": tool_use.input,
+                        "id": tool_use.id
+                    }
+                    
+                    # Show tool call in dev mode
+                    if self.dev_mode:
+                        self._print_dev_tool_call(tool_call)
+                    else:
+                        # In non-dev mode, show simple message for long-running tools
+                        if tool_call["tool"] == "execute_workflow":
+                            print()
+                            print("🔄 Executing workflow (this may take a moment)...")
+                    
+                    # Execute tool
+                    result = await self._execute_tool(
+                        tool_call["tool"],
+                        tool_call.get("arguments", {})
+                    )
+                    
+                    # Show result in dev mode
+                    if self.dev_mode:
+                        self._print_dev_tool_result(tool_call["tool"], result)
+                    
+                    tool_calls_made.append(tool_call)
+                    tool_results.append(result)
+                    
+                    # Format tool result for API
+                    tool_results_content.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": json.dumps(result)
+                    })
                 
-                # Show result in dev mode
-                if self.dev_mode:
-                    self._print_dev_tool_result(tool_call["tool"], result)
-                
-                tool_calls_made.append(tool_call)
-                tool_results.append(result)
-                
-                # Add tool call and result to conversation
-                # Format as a proper tool execution record
-                tool_call_json = json.dumps({
-                    "action": "call_tool",
-                    "tool": tool_call["tool"],
-                    "arguments": tool_call.get("arguments", {})
-                }, indent=2)
-                
-                tool_result_msg = f"Tool executed successfully.\nResult:\n{json.dumps(result, indent=2)}"
-                
+                # Add assistant message with tool uses
                 messages.append({
                     "role": "assistant",
-                    "content": tool_call_json
-                })
-                messages.append({
-                    "role": "user",
-                    "content": tool_result_msg
+                    "content": assistant_content
                 })
                 
-                # Continue loop to let agent use the result
+                # Add tool results
+                messages.append({
+                    "role": "user",
+                    "content": tool_results_content
+                })
+                
+                # Continue loop to let agent use the results
                 continue
             
-            elif parsed_response and parsed_response.get("action") == "message":
-                # Message response - extract content
-                response_text = parsed_response.get("content", assistant_text)
-                break
-            
             else:
-                # No structured response - this is an error, the agent should always use JSON
-                if self.dev_mode:
-                    print(f"\n{self.COLOR_ERROR}⚠️  Agent returned non-JSON response:{self.COLOR_RESET}")
-                    print(f"{assistant_text[:200]}...")
-                    print(f"{self.COLOR_ERROR}Treating as message.{self.COLOR_RESET}\n")
-                response_text = assistant_text
+                # Final response - extract text
+                for block in response.content:
+                    if block.type == "text":
+                        response_text = block.text
+                        break
                 break
         
         # Save assistant message with tool calls/results
@@ -179,18 +175,6 @@ class MainAgent:
         
         return response_text
     
-    def _format_tools_description(self) -> str:
-        """Format available tools for system prompt"""
-        lines = ["## AVAILABLE TOOLS\n"]
-        for tool_name, tool_info in AVAILABLE_TOOLS.items():
-            lines.append(f"### {tool_name}")
-            lines.append(f"Description: {tool_info['description']}")
-            if tool_info['parameters']:
-                lines.append("Parameters:")
-                for param, desc in tool_info['parameters'].items():
-                    lines.append(f"  - {param}: {desc}")
-            lines.append("")
-        return "\n".join(lines)
     
     def _format_session_context(self) -> str:
         """Format current session state to help agent avoid redundant actions"""
@@ -199,12 +183,12 @@ class MainAgent:
         
         lines = ["## CURRENT SESSION STATE\n"]
         
-        # Tools discovered
+        # MCP Tools discovered
         if self.session.available_tools:
-            lines.append("✅ Tools already discovered - DON'T call discover_tools() again!")
-            lines.append(f"   Available: {len(self.session.available_tools.get('tools', []))} tools")
+            lines.append("✅ MCP tools already discovered - DON'T call discover_mcp_tools() again!")
+            lines.append(f"   Available: {len(self.session.available_tools.get('tools', []))} MCP tools")
         else:
-            lines.append("❌ Tools not yet discovered - call discover_tools() first")
+            lines.append("❌ MCP tools not yet discovered - call discover_mcp_tools() first")
         
         # Workflow path
         if self.session.workflow_path:
@@ -212,11 +196,11 @@ class MainAgent:
         else:
             lines.append("❌ No workflow created yet")
         
-        # Tools selected
+        # MCP Tools selected
         if self.session.selected_tools:
-            lines.append(f"✅ Tools selected: {len(self.session.selected_tools)} tools")
+            lines.append(f"✅ MCP tools selected: {len(self.session.selected_tools)} tools")
         else:
-            lines.append("❌ No tools selected yet")
+            lines.append("❌ No MCP tools selected yet")
         
         # Executions
         if self.session.execution_attempts:
@@ -225,50 +209,6 @@ class MainAgent:
         
         lines.append("")
         return "\n".join(lines)
-    
-    def _parse_response(self, text: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse structured JSON response from agent.
-        Handles both tool calls and message responses.
-        """
-        try:
-            # Remove markdown code blocks if present
-            text = text.strip()
-            if "```json" in text:
-                start = text.find("```json") + 7
-                end = text.find("```", start)
-                if end != -1:
-                    text = text[start:end].strip()
-            elif text.startswith("```") and text.endswith("```"):
-                # Generic code block
-                lines = text.split('\n')
-                text = '\n'.join(lines[1:-1])
-            
-            # Try to find JSON in text
-            start = text.find('{')
-            if start == -1:
-                return None
-            
-            # Find matching brace
-            brace_count = 0
-            end = start
-            for i, char in enumerate(text[start:], start):
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        end = i + 1
-                        break
-            
-            json_str = text[start:end]
-            data = json.loads(json_str)
-            
-            return data
-            
-        except Exception as e:
-            # Not valid JSON, return None
-            return None
     
     async def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool function and update session state"""
@@ -279,7 +219,7 @@ class MainAgent:
             }
         
         try:
-            tool_func = AVAILABLE_TOOLS[tool_name]["function"]
+            tool_func = AVAILABLE_TOOLS[tool_name]
             
             # Check if async
             if asyncio.iscoroutinefunction(tool_func):
@@ -289,11 +229,11 @@ class MainAgent:
             
             # Update session state based on tool results
             if self.session and result.get("success"):
-                if tool_name == "discover_tools":
+                if tool_name == "discover_mcp_tools":
                     self.session.available_tools = result
                 elif tool_name == "write_workflow":
                     self.session.workflow_path = result.get("path")
-                elif tool_name == "select_tools":
+                elif tool_name == "select_mcp_tools":
                     self.session.selected_tools = arguments.get("tool_list", [])
                     self.session.tools_path = result.get("tools_path")
                 elif tool_name == "execute_workflow":

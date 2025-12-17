@@ -45,6 +45,69 @@ class ExecutorAgent:
         self.client = Anthropic(api_key=api_key)
         self.current_trace: Optional[ExecutionTrace] = None
     
+    def _convert_tools_to_anthropic_format(self, tools_config: ToolConfig) -> List[Dict[str, Any]]:
+        """
+        Convert MCP tools from tools.json to Anthropic's native tool format.
+        
+        Args:
+            tools_config: Tool configuration from tools.json
+        
+        Returns:
+            List of tool definitions in Anthropic format
+        """
+        anthropic_tools = []
+        
+        for tool in tools_config.tools:
+            # Get schema from tool if available, otherwise use generic object
+            input_schema = tool.get("input_schema", {
+                "type": "object",
+                "properties": {},
+                "required": []
+            })
+            
+            anthropic_tools.append({
+                "name": f"{tool['server']}__{tool['tool']}",  # Unique name: server__tool
+                "description": tool.get("description", f"Execute {tool['tool']} on {tool['server']}"),
+                "input_schema": input_schema
+            })
+        
+        # Add special control tools
+        anthropic_tools.append({
+            "name": "request_clarification",
+            "description": "Request clarification from the user when you need more information to proceed",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask the user"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Why you need this information"
+                    }
+                },
+                "required": ["question", "context"]
+            }
+        })
+        
+        anthropic_tools.append({
+            "name": "mark_workflow_complete",
+            "description": "Mark the workflow as complete when all steps are done and validated",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Summary of what was accomplished"
+                    }
+                },
+                "required": ["summary"]
+            }
+        })
+        
+        return anthropic_tools
+    
     def execute_workflow(
         self,
         workflow_path: str,

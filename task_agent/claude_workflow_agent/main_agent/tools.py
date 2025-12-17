@@ -20,9 +20,9 @@ _registry_cache = None
 _discovered_tools_cache = None
 
 
-async def discover_tools() -> Dict[str, Any]:
+async def discover_mcp_tools() -> Dict[str, Any]:
     """
-    Discover all available MCP tools from configured servers.
+    Discover all available MCP tools from configured MCP servers.
     Uses in-memory cache within the same session to avoid redundant calls.
     
     Returns:
@@ -157,13 +157,53 @@ def write_workflow(path: str, content: str) -> Dict[str, Any]:
         }
 
 
-def select_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dict[str, Any]:
+async def run_mcp_tool(server: str, tool: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Select tools for workflow and save to tools.json in same directory.
+    Run an MCP tool directly to test it or use it.
+    Useful for testing tools before creating workflows.
+    
+    Args:
+        server: MCP server name (e.g., "slack", "salesforce")
+        tool: Tool name (e.g., "send_message", "query")
+        parameters: Tool parameters as dict
+    
+    Returns:
+        Dict with: {success: bool, result: Any, error: str (if failed)}
+    """
+    global _registry_cache
+    
+    try:
+        # Create registry if needed
+        if not _registry_cache:
+            _registry_cache = await create_registry_from_config()
+        
+        # Execute the tool
+        print(f"🔧 Running MCP tool: {server}/{tool}")
+        result = await _registry_cache.call_tool(
+            server_name=server,
+            tool_name=tool,
+            arguments=parameters
+        )
+        
+        return {
+            "success": True,
+            "result": result
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dict[str, Any]:
+    """
+    Select MCP tools for workflow and save to tools.json in same directory.
     
     Args:
         workflow_path: Path to workflow.md
-        tool_list: List of {server, tool} dicts to include
+        tool_list: List of {server, tool} dicts to include (MCP tools)
     
     Returns:
         Dict with: {success: bool, tools_path: str, selected_count: int}
@@ -364,48 +404,134 @@ def list_workflows(directory: str = None) -> Dict[str, Any]:
         }
 
 
-# Tool registry for Main Agent
+# Tool registry for Main Agent (function mapping)
 AVAILABLE_TOOLS = {
-    "discover_tools": {
-        "function": discover_tools,
-        "description": "Discover all available MCP tools from configured servers",
-        "parameters": {}
-    },
-    "read_workflow": {
-        "function": read_workflow,
-        "description": "Read a workflow.md file",
-        "parameters": {
-            "path": "Path to workflow.md file"
+    "discover_mcp_tools": discover_mcp_tools,
+    "run_mcp_tool": run_mcp_tool,
+    "read_workflow": read_workflow,
+    "write_workflow": write_workflow,
+    "select_mcp_tools": select_mcp_tools,
+    "execute_workflow": execute_workflow,
+    "list_workflows": list_workflows
+}
+
+# Anthropic-format tool definitions for API
+ANTHROPIC_TOOLS = [
+    {
+        "name": "discover_mcp_tools",
+        "description": "Discover all available MCP tools from configured MCP servers. Returns list of {server, tool, description}.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
         }
     },
-    "write_workflow": {
-        "function": write_workflow,
-        "description": "Write/update a workflow.md file in a subdirectory",
-        "parameters": {
-            "path": "Path like './workflows/my_workflow' (will create workflow.md inside)",
-            "content": "Workflow content in markdown"
+    {
+        "name": "run_mcp_tool",
+        "description": "Run an MCP tool directly to test it or execute it. Useful for testing MCP tools before building workflows.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name (e.g., 'slack', 'salesforce', 'google-sheets')"
+                },
+                "tool": {
+                    "type": "string",
+                    "description": "Tool name (e.g., 'send_message', 'query', 'list_channels')"
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Tool parameters as key-value pairs"
+                }
+            },
+            "required": ["server", "tool", "parameters"]
         }
     },
-    "select_tools": {
-        "function": select_tools,
-        "description": "Select tools for workflow and generate tools.json",
-        "parameters": {
-            "workflow_path": "Path to workflow.md",
-            "tool_list": "List of {server, tool} dicts"
+    {
+        "name": "read_workflow",
+        "description": "Read a workflow.md file and return its contents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to workflow.md file"
+                }
+            },
+            "required": ["path"]
         }
     },
-    "execute_workflow": {
-        "function": execute_workflow,
-        "description": "Execute workflow and return detailed execution status (success/fail, step counts, errors)",
-        "parameters": {
-            "workflow_path": "Path to workflow.md file (e.g., './workflows/my_workflow/workflow.md')"
+    {
+        "name": "write_workflow",
+        "description": "Write/update a workflow.md file in a subdirectory. Creates the directory structure automatically.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path like './workflows/my_workflow' (will create workflow.md inside)"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Workflow content in markdown format"
+                }
+            },
+            "required": ["path", "content"]
         }
     },
-    "list_workflows": {
-        "function": list_workflows,
-        "description": "List existing workflows in directory",
-        "parameters": {
-            "directory": "Directory to search (optional, default: ./workflows)"
+    {
+        "name": "select_mcp_tools",
+        "description": "Select MCP tools for workflow and generate tools.json. Call this after writing a workflow to specify which MCP tools it needs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workflow_path": {
+                    "type": "string",
+                    "description": "Path to workflow.md file"
+                },
+                "tool_list": {
+                    "type": "array",
+                    "description": "List of MCP tool objects with server and tool name",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "server": {"type": "string", "description": "MCP server name"},
+                            "tool": {"type": "string", "description": "MCP tool name"}
+                        },
+                        "required": ["server", "tool"]
+                    }
+                }
+            },
+            "required": ["workflow_path", "tool_list"]
+        }
+    },
+    {
+        "name": "execute_workflow",
+        "description": "Execute workflow with Executor Agent and return detailed execution results including status, step counts, and any errors.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workflow_path": {
+                    "type": "string",
+                    "description": "Path to workflow.md file (e.g., './workflows/my_workflow/workflow.md')"
+                }
+            },
+            "required": ["workflow_path"]
+        }
+    },
+    {
+        "name": "list_workflows",
+        "description": "List existing workflows in a directory. Returns workflow names, paths, and directories.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "description": "Directory to search (optional, defaults to './workflows')"
+                }
+            },
+            "required": []
         }
     }
-}
+]
