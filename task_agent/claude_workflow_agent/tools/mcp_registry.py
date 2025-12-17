@@ -449,6 +449,19 @@ class MCPToolRegistry:
         
         storage = self._token_storage[server_name]
         
+        # Setup callback handler in case OAuth is needed
+        self._ensure_callback_server()
+        
+        async def callback_handler() -> tuple[str, str | None]:
+            try:
+                auth_code = await self._callback_server.wait_for_callback_async(timeout=60)
+                return auth_code, self._callback_server.get_state()
+            except Exception as e:
+                raise
+        
+        async def redirect_handler(authorization_url: str) -> None:
+            webbrowser.open(authorization_url)
+        
         # OAuth setup (will reuse tokens if available)
         client_metadata = OAuthClientMetadata.model_validate({
             "client_name": "Claude Workflow Agent",
@@ -461,33 +474,60 @@ class MCPToolRegistry:
             server_url=server_url.replace("/mcp", ""),
             client_metadata=client_metadata,
             storage=storage,
-            redirect_handler=lambda url: None,  # No browser needed if tokens cached
-            callback_handler=None,
+            redirect_handler=redirect_handler,
+            callback_handler=callback_handler,
         )
         
         # Connect and call tool
-        async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True) as http_client:
-            async with streamable_http_client(
-                url=server_url,
-                http_client=http_client,
-            ) as (read_stream, write_stream, get_session_id):
-                session = ClientSession(read_stream, write_stream)
-                await session.initialize()
-                
-                # Call tool
-                result = await session.call_tool(tool_name, arguments)
-                
-                # Parse result
-                if hasattr(result, 'content'):
-                    contents = []
-                    for content in result.content:
-                        if content.type == "text":
-                            contents.append(content.text)
+        try:
+            async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True, timeout=30.0) as http_client:
+                async with streamable_http_client(
+                    url=server_url,
+                    http_client=http_client,
+                ) as (read_stream, write_stream, get_session_id):
+                    # IMPORTANT: Use async context manager for ClientSession!
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        
+                        # Stop callback server now that OAuth is complete
+                        self._stop_callback_server()
+                        
+                        # Call tool
+                        try:
+                            result = await session.call_tool(tool_name, arguments)
+                        except BaseException as e:
+                            # Handle ExceptionGroup (Python 3.11+) by checking nested exceptions
+                            error_msg = str(e)
+                            error_type = type(e).__name__
+                            
+                            # Check if it's a Pydantic validation error (MCP server format mismatch)
+                            is_pydantic_error = (
+                                "ValidationError" in error_type or 
+                                "pydantic" in error_msg.lower() or
+                                "CallToolResult" in error_msg  # MCP protocol error
+                            )
+                            
+                            if is_pydantic_error:
+                                return {
+                                    "success": False,
+                                    "error": f"⚠️  MCP Server Format Error: The '{server_name}' server returned data in an unexpected format. This is a bug in the MCP server implementation, not your code. Try a different tool or contact the server administrator."
+                                }
+                            raise
+                        
+                        # Parse result
+                        if hasattr(result, 'content'):
+                            contents = []
+                            for content in result.content:
+                                if content.type == "text":
+                                    contents.append(content.text)
+                                else:
+                                    contents.append(str(content))
+                            return {"success": True, "result": "\n".join(contents)}
                         else:
-                            contents.append(str(content))
-                    return {"success": True, "result": "\n".join(contents)}
-                else:
-                    return {"success": True, "result": str(result)}
+                            return {"success": True, "result": str(result)}
+        finally:
+            # Always clean up callback server
+            self._stop_callback_server()
 
 
 # ==================== Tool Executor Adapter ====================

@@ -59,7 +59,7 @@ When user asks you to create/improve a workflow:
 
 3. **Test MCP Tools** (Optional but recommended)
    - Use run_mcp_tool() to test MCP tools before building workflow
-   - Understand what they do and what parameters they need
+   - ⚠️  IMPORTANT: Use EXACT tool names from discovery results
    - Example: run_mcp_tool(server="slack", tool="list_channels", parameters={})
 
 4. **Write Workflow**
@@ -97,4 +97,10 @@ When user asks you to create/improve a workflow:
 - **MCP Tools**: Tools from MCP servers (slack/send_message, salesforce/query, etc.)
 - Use agent tools to build and test workflows
 - Workflows use MCP tools to accomplish tasks
+
+## IMPORTANT RULES
+
+- When using run_mcp_tool(), you MUST use the EXACT tool name from discovery
+- Don't guess or abbreviate tool names - use them exactly as discovered
+- Example: Use "list_google_groups" not "list_groups"
 """

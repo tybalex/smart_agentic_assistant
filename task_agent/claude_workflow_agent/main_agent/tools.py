@@ -175,25 +175,69 @@ async def run_mcp_tool(server: str, tool: str, parameters: Dict[str, Any]) -> Di
     try:
         # Create registry if needed
         if not _registry_cache:
+            print("📦 Creating MCP registry...")
             _registry_cache = await create_registry_from_config()
         
-        # Execute the tool
-        print(f"🔧 Running MCP tool: {server}/{tool}")
-        result = await _registry_cache.call_tool(
-            server_name=server,
-            tool_name=tool,
-            arguments=parameters
-        )
+        # Execute the tool with timeout
+        print(f"🔧 Executing MCP tool: {server}/{tool}...")
         
-        return {
-            "success": True,
-            "result": result
-        }
+        import asyncio
+        import traceback
+        try:
+            result = await asyncio.wait_for(
+                _registry_cache.call_tool(
+                    server_name=server,
+                    tool_name=tool,
+                    arguments=parameters
+                ),
+                timeout=30.0
+            )
+            
+            print(f"✅ Tool executed successfully")
+            return {
+                "success": True,
+                "result": result
+            }
+            
+        except asyncio.TimeoutError:
+            print(f"⏱️  Tool execution timed out after 30 seconds")
+            return {
+                "success": False,
+                "error": "Tool execution timed out. The MCP server may be slow or unavailable."
+            }
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            
+            # If the error message already contains our friendly error format, use it
+            if "⚠️  MCP Server Format Error:" in error_msg:
+                print(f"❌ {error_msg[:150]}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Check if it's a known issue
+            if "ValidationError" in error_type or "pydantic" in error_msg.lower() or "CallToolResult" in error_msg:
+                print(f"❌ MCP server format error")
+                return {
+                    "success": False,
+                    "error": f"⚠️  MCP Server Format Error: The '{server}' server returned data in an unexpected format. This is a bug in the MCP server, not your code."
+                }
+            
+            # Generic error - show concise info
+            print(f"❌ Error: {error_type}: {error_msg[:100]}")
+            return {
+                "success": False,
+                "error": f"{error_type}: {error_msg[:300]}"
+            }
         
     except Exception as e:
+        error_msg = str(e)
+        print(f"❌ Tool execution failed: {error_msg[:200]}")
         return {
             "success": False,
-            "error": str(e)
+            "error": error_msg
         }
 
 
@@ -428,17 +472,17 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "run_mcp_tool",
-        "description": "Run an MCP tool directly to test it or execute it. Useful for testing MCP tools before building workflows.",
+        "description": "Run an MCP tool directly to test it or execute it. Useful for testing MCP tools before building workflows. IMPORTANT: Use EXACT tool names from discover_mcp_tools results.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "server": {
                     "type": "string",
-                    "description": "MCP server name (e.g., 'slack', 'salesforce', 'google-sheets')"
+                    "description": "MCP server name (e.g., 'slack', 'salesforce', 'google-groups'). Must match server name from discovery."
                 },
                 "tool": {
                     "type": "string",
-                    "description": "Tool name (e.g., 'send_message', 'query', 'list_channels')"
+                    "description": "EXACT tool name from discovery (e.g., 'send_message', 'list_google_groups', 'list_channels'). Do not abbreviate or guess - use exact name from discover_mcp_tools."
                 },
                 "parameters": {
                     "type": "object",
