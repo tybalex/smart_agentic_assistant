@@ -69,7 +69,11 @@ class MainAgent:
         
         # Add tools description to system prompt
         tools_desc = self._format_tools_description()
-        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + tools_desc
+        
+        # Add session context to help agent avoid redundant actions
+        session_context = self._format_session_context()
+        
+        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + tools_desc + "\n\n" + session_context
         
         # Call Claude
         response_text = ""
@@ -88,6 +92,14 @@ class MainAgent:
             )
             
             assistant_text = response.content[0].text
+            
+            # Debug in dev mode
+            if self.dev_mode:
+                print(f"\n{self.COLOR_TOOL}📝 Raw LLM Response:{self.COLOR_RESET}")
+                print(f"{assistant_text[:300]}")
+                if len(assistant_text) > 300:
+                    print("...")
+                print()
             
             # Check if response contains JSON (tool call or message)
             parsed_response = self._parse_response(assistant_text)
@@ -123,13 +135,18 @@ class MainAgent:
                 tool_results.append(result)
                 
                 # Add tool call and result to conversation
-                # Use a description of the tool call as assistant message
-                tool_call_desc = f"Calling tool: {tool_call['tool']}"
-                tool_result_msg = f"Tool Result:\n{json.dumps(result, indent=2)}"
+                # Format as a proper tool execution record
+                tool_call_json = json.dumps({
+                    "action": "call_tool",
+                    "tool": tool_call["tool"],
+                    "arguments": tool_call.get("arguments", {})
+                }, indent=2)
+                
+                tool_result_msg = f"Tool executed successfully.\nResult:\n{json.dumps(result, indent=2)}"
                 
                 messages.append({
                     "role": "assistant",
-                    "content": tool_call_desc
+                    "content": tool_call_json
                 })
                 messages.append({
                     "role": "user",
@@ -145,7 +162,11 @@ class MainAgent:
                 break
             
             else:
-                # No structured response, return as-is
+                # No structured response - this is an error, the agent should always use JSON
+                if self.dev_mode:
+                    print(f"\n{self.COLOR_ERROR}⚠️  Agent returned non-JSON response:{self.COLOR_RESET}")
+                    print(f"{assistant_text[:200]}...")
+                    print(f"{self.COLOR_ERROR}Treating as message.{self.COLOR_RESET}\n")
                 response_text = assistant_text
                 break
         
@@ -169,6 +190,40 @@ class MainAgent:
                 for param, desc in tool_info['parameters'].items():
                     lines.append(f"  - {param}: {desc}")
             lines.append("")
+        return "\n".join(lines)
+    
+    def _format_session_context(self) -> str:
+        """Format current session state to help agent avoid redundant actions"""
+        if not self.session:
+            return ""
+        
+        lines = ["## CURRENT SESSION STATE\n"]
+        
+        # Tools discovered
+        if self.session.available_tools:
+            lines.append("✅ Tools already discovered - DON'T call discover_tools() again!")
+            lines.append(f"   Available: {len(self.session.available_tools.get('tools', []))} tools")
+        else:
+            lines.append("❌ Tools not yet discovered - call discover_tools() first")
+        
+        # Workflow path
+        if self.session.workflow_path:
+            lines.append(f"✅ Workflow exists: {self.session.workflow_path}")
+        else:
+            lines.append("❌ No workflow created yet")
+        
+        # Tools selected
+        if self.session.selected_tools:
+            lines.append(f"✅ Tools selected: {len(self.session.selected_tools)} tools")
+        else:
+            lines.append("❌ No tools selected yet")
+        
+        # Executions
+        if self.session.execution_attempts:
+            last = self.session.get_last_execution()
+            lines.append(f"📊 Executions: {len(self.session.execution_attempts)}, Last status: {last.status}")
+        
+        lines.append("")
         return "\n".join(lines)
     
     def _parse_response(self, text: str) -> Optional[Dict[str, Any]]:
@@ -216,7 +271,7 @@ class MainAgent:
             return None
     
     async def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool function"""
+        """Execute a tool function and update session state"""
         if tool_name not in AVAILABLE_TOOLS:
             return {
                 "success": False,
@@ -231,6 +286,21 @@ class MainAgent:
                 result = await tool_func(**arguments)
             else:
                 result = tool_func(**arguments)
+            
+            # Update session state based on tool results
+            if self.session and result.get("success"):
+                if tool_name == "discover_tools":
+                    self.session.available_tools = result
+                elif tool_name == "write_workflow":
+                    self.session.workflow_path = result.get("path")
+                elif tool_name == "select_tools":
+                    self.session.selected_tools = arguments.get("tool_list", [])
+                    self.session.tools_path = result.get("tools_path")
+                elif tool_name == "execute_workflow":
+                    self.session.add_execution_attempt(
+                        status=result.get("status", "unknown"),
+                        trace=result
+                    )
             
             return result
         except Exception as e:

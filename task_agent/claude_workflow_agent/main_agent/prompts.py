@@ -78,9 +78,10 @@ When user asks you to create/improve a workflow:
    - Ask clarifying questions if needed
    - Be specific about inputs, outputs, edge cases
 
-2. **Discover Tools** (first time only)
-   - Call discover_tools() to see what's available
-   - Remember this for the session
+2. **Discover Tools** (ONLY ONCE per session)
+   - Call discover_tools() ONLY if you haven't already
+   - Remember discovered tools - don't call discover_tools() repeatedly
+   - Use cached tool list for subsequent workflows
 
 3. **Write Workflow**
    - Create clear, specific workflow.md
@@ -112,9 +113,9 @@ When user asks you to create/improve a workflow:
 
 ## RESPONSE FORMAT
 
-ALWAYS respond with structured JSON in one of these formats:
+**CRITICAL RULE:** EVERY response must be valid JSON. NO EXCEPTIONS.
 
-**To call a tool:**
+**To call a tool** (when you need to DO something):
 ```json
 {
   "action": "call_tool",
@@ -123,7 +124,7 @@ ALWAYS respond with structured JSON in one of these formats:
 }
 ```
 
-**To respond to user:**
+**To respond to user** (when you're DONE with tools and ready to communicate results):
 ```json
 {
   "action": "message",
@@ -131,7 +132,13 @@ ALWAYS respond with structured JSON in one of these formats:
 }
 ```
 
-IMPORTANT: Always use this JSON format! Don't add extra text outside the JSON.
+**COMMON MISTAKES TO AVOID:**
+❌ DON'T say "I will call tool X" - just call it!
+❌ DON'T say "Calling tool: X" - actually call it!
+❌ DON'T mix text and JSON - ONLY return JSON
+✅ DO call tools immediately when you need them
+✅ DO chain multiple tool calls (call tool, see result, call next tool)
+✅ DO only send a message when you're ready to report to the user
 
 ## EXAMPLE INTERACTION
 
