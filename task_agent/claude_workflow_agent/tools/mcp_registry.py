@@ -496,7 +496,7 @@ class MCPToolRegistry:
                         try:
                             result = await session.call_tool(tool_name, arguments)
                         except BaseException as e:
-                            # Handle ExceptionGroup (Python 3.11+) by checking nested exceptions
+                            # Handle Pydantic validation errors by extracting the actual data
                             error_msg = str(e)
                             error_type = type(e).__name__
                             
@@ -504,13 +504,48 @@ class MCPToolRegistry:
                             is_pydantic_error = (
                                 "ValidationError" in error_type or 
                                 "pydantic" in error_msg.lower() or
-                                "CallToolResult" in error_msg  # MCP protocol error
+                                "CallToolResult" in error_msg
                             )
                             
                             if is_pydantic_error:
+                                # Try to extract the actual data from the validation error
+                                # The Pydantic exception contains the actual input value
+                                import json
+                                
+                                # Try to get the input value from the exception
+                                actual_data = None
+                                
+                                # Check if exception has the errors() method (Pydantic ValidationError)
+                                if hasattr(e, 'errors'):
+                                    errors = e.errors()
+                                    if errors and len(errors) > 0:
+                                        # Get the input value from the first error
+                                        error_info = errors[0]
+                                        if 'input' in error_info:
+                                            actual_data = error_info['input']
+                                
+                                # If we got actual data, format and return it
+                                if actual_data is not None:
+                                    try:
+                                        # Convert to JSON string for consistent formatting
+                                        result_str = json.dumps(actual_data, indent=2, default=str)
+                                        return {
+                                            "success": True,
+                                            "result": result_str,
+                                            "note": f"Note: '{server_name}' returned non-standard MCP format (list instead of dict), but we handled it"
+                                        }
+                                    except Exception:
+                                        # If JSON serialization fails, convert to string
+                                        return {
+                                            "success": True,
+                                            "result": str(actual_data),
+                                            "note": f"Note: '{server_name}' returned non-standard format"
+                                        }
+                                
+                                # If we couldn't extract data, return friendly error
                                 return {
                                     "success": False,
-                                    "error": f"⚠️  MCP Server Format Error: The '{server_name}' server returned data in an unexpected format. This is a bug in the MCP server implementation, not your code. Try a different tool or contact the server administrator."
+                                    "error": f"⚠️  MCP Server Format Error: The '{server_name}' server returned data in an unexpected format that we couldn't parse."
                                 }
                             raise
                         

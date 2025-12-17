@@ -221,11 +221,19 @@ class MainAgent:
         try:
             tool_func = AVAILABLE_TOOLS[tool_name]
             
+            # Filter arguments to only include what the function accepts
+            import inspect
+            sig = inspect.signature(tool_func)
+            valid_params = set(sig.parameters.keys())
+            
+            # Filter arguments to only valid parameters
+            filtered_args = {k: v for k, v in arguments.items() if k in valid_params}
+            
             # Check if async
             if asyncio.iscoroutinefunction(tool_func):
-                result = await tool_func(**arguments)
+                result = await tool_func(**filtered_args)
             else:
-                result = tool_func(**arguments)
+                result = tool_func(**filtered_args)
             
             # Update session state based on tool results
             if self.session and result.get("success"):
