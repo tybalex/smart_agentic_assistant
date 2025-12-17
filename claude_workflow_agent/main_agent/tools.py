@@ -245,10 +245,12 @@ async def run_mcp_tool(server: str, tool: str, parameters: Dict[str, Any]) -> Di
 def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     Select MCP tools for workflow and save to tools.json in same directory.
+    Fetches tool descriptions from MCP registry if not provided.
     
     Args:
         workflow_path: Path to workflow.md
         tool_list: List of {server, tool} dicts to include (MCP tools)
+                   Optional: can include "description" key
     
     Returns:
         Dict with: {success: bool, tools_path: str, selected_count: int}
@@ -266,17 +268,57 @@ def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dic
         # Get unique servers
         servers = list(set(t["server"] for t in tool_list))
         
-        # Create tools.json format
-        tools_config = {
-            "mcp_servers": servers,
-            "tools": [
+        # Check if we need to fetch descriptions
+        need_descriptions = any(not t.get("description") for t in tool_list)
+        
+        enriched_tools = []
+        if need_descriptions:
+            # Try to use cached discovered tools from discover_mcp_tools()
+            if _discovered_tools_cache and _discovered_tools_cache.get("tools"):
+                # Build lookup map of (server, tool) -> description from cache
+                description_map = {}
+                for tool_info in _discovered_tools_cache["tools"]:
+                    key = (tool_info["server"], tool_info["tool"])
+                    description_map[key] = tool_info.get("description", "")
+                
+                # Enrich tool_list with descriptions from cache
+                for t in tool_list:
+                    key = (t["server"], t["tool"])
+                    description = t.get("description") or description_map.get(key, "")
+                    enriched_tools.append({
+                        "server": t["server"],
+                        "tool": t["tool"],
+                        "description": description
+                    })
+                print(f"✅ Enriched {len(enriched_tools)} tools with descriptions from cache")
+            else:
+                # No cache available - warn user
+                print("⚠️  Warning: Tool descriptions not available.")
+                print("   Call discover_mcp_tools() first to get tool descriptions,")
+                print("   or provide descriptions in the tool_list parameter.")
+                enriched_tools = [
+                    {
+                        "server": t["server"],
+                        "tool": t["tool"],
+                        "description": t.get("description", "")
+                    }
+                    for t in tool_list
+                ]
+        else:
+            # Descriptions already provided
+            enriched_tools = [
                 {
                     "server": t["server"],
                     "tool": t["tool"],
                     "description": t.get("description", "")
                 }
                 for t in tool_list
-            ],
+            ]
+        
+        # Create tools.json format
+        tools_config = {
+            "mcp_servers": servers,
+            "tools": enriched_tools,
             "version": "1.0"
         }
         
@@ -287,7 +329,7 @@ def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dic
         return {
             "success": True,
             "tools_path": str(tools_path.absolute()),
-            "selected_count": len(tool_list),
+            "selected_count": len(enriched_tools),
             "servers": servers
         }
         

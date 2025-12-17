@@ -9,7 +9,7 @@ Centralizes all magic numbers and configuration values for easy maintenance.
 # =============================================================================
 
 # Main Agent
-MAX_TOOL_ROUNDS = 10  # Maximum number of tool call rounds per agent turn
+MAX_TOOL_ROUNDS = 20  # Maximum number of tool call rounds per agent turn
 MAX_TOKENS_PER_REQUEST = 32000  # Maximum tokens for Claude API requests (streaming enabled)
 AGENT_TEMPERATURE = 0.1  # Temperature for agent responses (low for consistency)
 
