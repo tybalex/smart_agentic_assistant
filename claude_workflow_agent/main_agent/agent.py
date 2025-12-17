@@ -15,6 +15,7 @@ from anthropic import Anthropic
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from constants import (
+    CLAUDE_MODEL,
     MAX_TOOL_ROUNDS,
     MAX_TOKENS_PER_REQUEST,
     AGENT_TEMPERATURE,
@@ -35,14 +36,14 @@ class MainAgent:
     Similar to Claude Code, but for workflows instead of code.
     """
     
-    def __init__(self, model: str = "claude-sonnet-4-20250514", dev_mode: bool = False):
+    def __init__(self, model: str = None, dev_mode: bool = False):
         """Initialize Main Agent"""
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable not set")
         
         self.client = Anthropic(api_key=api_key)
-        self.model = model
+        self.model = model or CLAUDE_MODEL
         self.session: Optional[WorkflowSession] = None
         self.dev_mode = dev_mode
         
@@ -316,7 +317,7 @@ class MainAgent:
         # MCP Tools discovered - Show actual list of available tools
         if self.session.available_tools:
             tools_list = self.session.available_tools.get('tools', [])
-            lines.append("✅ MCP tools already discovered - DON'T call discover_mcp_tools() again!")
+            lines.append("✅ MCP tools already listed - DON'T call list_mcp_tools() again!")
             lines.append(f"   Total: {len(tools_list)} tools from {len(self.session.available_tools.get('servers', []))} servers\n")
             
             # Group tools by server for easy reference
@@ -336,8 +337,8 @@ class MainAgent:
                 lines.append(f"  {', '.join(tool_names)}")
                 lines.append("")
         else:
-            lines.append("❌ MCP tools not yet discovered - call discover_mcp_tools() FIRST before select_mcp_tools()")
-            lines.append("   You MUST discover tools to know what tools exist - DO NOT GUESS tool names!\n")
+            lines.append("❌ MCP tools not yet listed - call list_mcp_tools() FIRST before select_mcp_tools()")
+            lines.append("   You MUST list tools to know what tools exist - DO NOT GUESS tool names!\n")
         
         # Workflow path
         if self.session.workflow_path:
@@ -386,7 +387,7 @@ class MainAgent:
             
             # Update session state based on tool results
             if self.session and result.get("success"):
-                if tool_name == "discover_mcp_tools":
+                if tool_name == "list_mcp_tools":
                     self.session.available_tools = result
                 elif tool_name == "write_workflow":
                     self.session.workflow_path = result.get("path")

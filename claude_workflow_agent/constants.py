@@ -8,6 +8,9 @@ Centralizes all magic numbers and configuration values for easy maintenance.
 # AGENT CONFIGURATION
 # =============================================================================
 
+# Model Configuration
+CLAUDE_MODEL = "claude-sonnet-4-5-20250929"  # Model for both Main Agent and Executor Agent
+
 # Main Agent
 MAX_TOOL_ROUNDS = 20  # Maximum number of tool call rounds per agent turn
 MAX_TOKENS_PER_REQUEST = 32000  # Maximum tokens for Claude API requests (streaming enabled)

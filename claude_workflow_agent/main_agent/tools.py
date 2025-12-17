@@ -21,9 +21,14 @@ _registry_cache = None
 _discovered_tools_cache = None
 
 
-async def discover_mcp_tools() -> Dict[str, Any]:
+async def list_mcp_tools() -> Dict[str, Any]:
     """
-    Discover all available MCP tools from configured MCP servers.
+    List all MCP tools available to the Main Agent from configured MCP servers.
+    
+    IMPORTANT: This shows ALL tools the Main Agent has access to across all servers.
+    To see which tools a specific WORKFLOW is configured to use, read that workflow's 
+    tools.json file instead (it's in the same directory as workflow.md).
+    
     Uses in-memory cache within the same session to avoid redundant calls.
     
     Returns:
@@ -42,7 +47,7 @@ async def discover_mcp_tools() -> Dict[str, Any]:
             return _discovered_tools_cache
         
         # Need to discover - create registry if needed
-        print("🔍 Discovering MCP tools...")
+        print("🔍 Listing MCP tools from all configured servers...")
         if not _registry_cache:
             _registry_cache = await create_registry_from_config()
         
@@ -361,16 +366,19 @@ def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dic
         }
 
 
-async def execute_workflow(workflow_path: str) -> Dict[str, Any]:
+async def execute_workflow(workflow_path: str, input_data: str = None) -> Dict[str, Any]:
     """
     Execute workflow with Executor Agent.
     
     Args:
         workflow_path: Path to workflow.md file
+        input_data: Optional input data/variables for the workflow (e.g., company details, IDs, etc.)
     
     Returns:
         Dict with execution trace data
     """
+    global _registry_cache  # Need to declare global to modify it
+    
     try:
         workflow_file = Path(workflow_path)
         tools_path = workflow_file.parent / "tools.json"
@@ -396,35 +404,29 @@ async def execute_workflow(workflow_path: str) -> Dict[str, Any]:
         
         tools_config = ToolConfig.from_json(tools_data)
         
-        # Create mock tool executor for now
-        # TODO: Replace with real MCP tool executor
+        # Create real MCP tool executor with registry
         from executor.executor_agent import ExecutorAgent
+        from tools.mcp_registry import MCPToolExecutor
         
-        # For now, use a mock executor
-        class MockExecutor:
-            def execute_tool(self, server, tool, parameters):
-                return {
-                    "success": True,
-                    "message": f"Mock execution: {server}/{tool}"
-                }
+        # Create registry if needed
+        if not _registry_cache:
+            print("📦 Creating MCP registry for executor...")
+            _registry_cache = await create_registry_from_config()
         
-        mock_executor = MockExecutor()
+        # Create MCP tool executor with allowed tools from tools.json
+        mcp_executor = MCPToolExecutor(
+            registry=_registry_cache,
+            allowed_tools=tools_config.tools
+        )
         
-        # Check if dev mode is enabled (verbose output)
-        import os
-        dev_mode = os.environ.get("DEV_MODE", "").lower() in ("true", "1", "yes")
-        
-        # Create and run executor
-        if not dev_mode:
-            print("⏳ Executing workflow with Executor Agent...")
-        executor = ExecutorAgent(tool_executor=mock_executor, verbose=dev_mode)
-        trace = executor.execute_workflow(
+        # Create and run executor (output is now always visible)
+        executor = ExecutorAgent(tool_executor=mcp_executor, verbose=False)
+        trace = await executor.execute_workflow(
             workflow_path=str(workflow_file),
             tools_config=tools_config,
-            workflow_content=workflow_content
+            workflow_content=workflow_content,
+            input_data=input_data
         )
-        if not dev_mode:
-            print("✅ Workflow execution completed")
         
         # Check if execution was successful
         from executor.models import SessionStatus, ActionStatus
@@ -444,20 +446,35 @@ async def execute_workflow(workflow_path: str) -> Dict[str, Any]:
             "trace_summary": f"Executed {len(trace.steps)} steps, {completed_steps} succeeded"
         }
         
-        # Include full trace in result for detailed inspection
-        if not success:
-            result["details"] = "Workflow execution incomplete or failed. Check failed_steps."
-            # Include last few steps for debugging
-            if trace.steps:
-                result["last_steps"] = [
-                    {
-                        "step": s.step_number,
-                        "description": s.description[:100] if s.description else "N/A",
-                        "status": s.status.value,
-                        "error": s.error
-                    }
-                    for s in trace.steps[-3:]  # Last 3 steps
-                ]
+        # Include clarification requests if workflow needs input
+        if trace.clarification_requests:
+            result["clarification_requests"] = [
+                {
+                    "question": cr.question,
+                    "context": cr.context,
+                    "step_number": cr.step_number
+                }
+                for cr in trace.clarification_requests
+            ]
+        
+        # Include final summary if available
+        if trace.final_summary:
+            result["final_summary"] = trace.final_summary
+        
+        # Include full step details (not truncated) for Main Agent to analyze
+        if trace.steps:
+            result["steps"] = [
+                {
+                    "step": s.step_number,
+                    "description": s.description,  # Full description, not truncated
+                    "status": s.status.value,
+                    "reasoning": s.reasoning if hasattr(s, 'reasoning') else None,
+                    "tool_calls": s.tool_calls if hasattr(s, 'tool_calls') else [],
+                    "result": s.result if hasattr(s, 'result') else None,
+                    "error": s.error
+                }
+                for s in trace.steps
+            ]
         
         return result
         
@@ -521,7 +538,7 @@ def list_workflows(directory: str = None) -> Dict[str, Any]:
 
 # Tool registry for Main Agent (function mapping)
 AVAILABLE_TOOLS = {
-    "discover_mcp_tools": discover_mcp_tools,
+    "list_mcp_tools": list_mcp_tools,
     "run_mcp_tool": run_mcp_tool,
     "read_workflow": read_workflow,
     "write_workflow": write_workflow,
@@ -533,8 +550,8 @@ AVAILABLE_TOOLS = {
 # Anthropic-format tool definitions for API
 ANTHROPIC_TOOLS = [
     {
-        "name": "discover_mcp_tools",
-        "description": "Discover all available MCP tools from configured MCP servers. Returns list of {server, tool, description}.",
+        "name": "list_mcp_tools",
+        "description": "List ALL MCP tools available to Main Agent from configured servers. IMPORTANT: This shows the full catalog of tools Main Agent can access, NOT the tools a specific workflow uses. To see which tools a workflow is configured to use, read the workflow's tools.json file instead (same directory as workflow.md). Only call this when you need to see what tools exist across all MCP servers (e.g., when creating new workflows or selecting tools).",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -543,7 +560,7 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "run_mcp_tool",
-        "description": "Run an MCP tool directly to test it or execute it. Useful for testing MCP tools before building workflows. IMPORTANT: Use EXACT tool names from discover_mcp_tools results.",
+        "description": "Run an MCP tool directly to test it or execute it. Useful for testing MCP tools before building workflows. IMPORTANT: Use EXACT tool names from list_mcp_tools results.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -553,7 +570,7 @@ ANTHROPIC_TOOLS = [
                 },
                 "tool": {
                     "type": "string",
-                    "description": "EXACT tool name from discovery (e.g., 'send_message', 'list_google_groups', 'list_channels'). Do not abbreviate or guess - use exact name from discover_mcp_tools."
+                    "description": "EXACT tool name from discovery (e.g., 'send_message', 'list_google_groups', 'list_channels'). Do not abbreviate or guess - use exact name from list_mcp_tools."
                 },
                 "parameters": {
                     "type": "object",
@@ -623,13 +640,17 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "execute_workflow",
-        "description": "Execute workflow with Executor Agent and return detailed execution results including status, step counts, and any errors.",
+        "description": "Execute workflow with Executor Agent and return detailed execution results including status, step counts, and any errors. Input data is optional, but if it is not provided, you should warn the user before executing the workflow.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "workflow_path": {
                     "type": "string",
                     "description": "Path to workflow.md file (e.g., './workflows/my_workflow/workflow.md')"
+                },
+                "input_data": {
+                    "type": "string",
+                    "description": "Optional input data for the workflow. Can be structured data (JSON, key-value pairs) or free-form text with context/variables the workflow needs (e.g., company details, IDs, configuration). If the user provided input files with @, include that content here."
                 }
             },
             "required": ["workflow_path"]

@@ -4,11 +4,20 @@ Simplified from task_agent - no UI, no dynamic discovery, fixed tool set.
 """
 
 import os
+import sys
 import json
 import logging
+import asyncio
+import inspect
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
+from pathlib import Path
 from anthropic import Anthropic
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from constants import CLAUDE_MODEL
 
 from .models import (
     ExecutionTrace, StepExecution, ClarificationRequest,
@@ -70,12 +79,12 @@ class ExecutorAgent:
     
     def __init__(
         self,
-        tool_executor,  # Injected tool executor (will use ToolRegistryClient)
-        model: str = "claude-sonnet-4-20250514",
+        tool_executor,  # Injected tool executor (will use MCPToolExecutor)
+        model: str = None,
         verbose: bool = False  # Enable verbose output for dev mode
     ):
         self.tool_executor = tool_executor
-        self.model = model
+        self.model = model or CLAUDE_MODEL
         self.verbose = verbose
         
         # Check for API key
@@ -85,6 +94,7 @@ class ExecutorAgent:
         
         self.client = Anthropic(api_key=api_key)
         self.current_trace: Optional[ExecutionTrace] = None
+        self.input_data: Optional[str] = None  # Will be set by execute_workflow
     
     def _convert_tools_to_anthropic_format(self, tools_config: ToolConfig) -> List[Dict[str, Any]]:
         """
@@ -149,11 +159,12 @@ class ExecutorAgent:
         
         return anthropic_tools
     
-    def execute_workflow(
+    async def execute_workflow(
         self,
         workflow_path: str,
         tools_config: ToolConfig,
-        workflow_content: Optional[str] = None
+        workflow_content: Optional[str] = None,
+        input_data: Optional[str] = None
     ) -> ExecutionTrace:
         """
         Execute a workflow with scoped tools.
@@ -161,7 +172,8 @@ class ExecutorAgent:
         Args:
             workflow_path: Path to workflow.md file
             tools_config: Tool configuration from tools.json
-            workflow_content: Optional pre-loaded workflow content
+            workflow_content: Optional pre-loaded workflow content (the workflow.md instructions)
+            input_data: Optional input data/variables for the workflow (values to use)
         
         Returns:
             ExecutionTrace with complete execution log
@@ -182,52 +194,47 @@ class ExecutorAgent:
             status=SessionStatus.ACTIVE,
         )
         
-        # Format available tools for LLM
-        tools_context = self._format_tools_context(tools_config)
+        # Store input data for use in prompts
+        self.input_data = input_data
         
         # Main execution loop
         step_number = 1
         max_steps = 50  # Safety limit
         budget = TokenBudget(max_tokens=180000)
         
-        if self.verbose:
-            print(Colors.header(f"\n{'='*80}"))
-            print(Colors.header(f"🚀 EXECUTOR AGENT: STARTING WORKFLOW EXECUTION"))
-            print(Colors.header(f"{'='*80}"))
-            print(Colors.executor(f"📁 Workflow: {workflow_path}"))
-            print(Colors.executor(f"🔧 Tools: {len(tools_config.tools)} available"))
-            print(Colors.header(f"{'='*80}\n"))
+        # Always show execution start
+        print(Colors.header(f"\n{'='*80}"))
+        print(Colors.header(f"🚀 EXECUTOR AGENT: STARTING WORKFLOW EXECUTION"))
+        print(Colors.header(f"{'='*80}"))
+        print(Colors.executor(f"📁 Workflow: {workflow_path}"))
+        print(Colors.executor(f"🔧 Tools: {len(tools_config.tools)} available"))
+        if input_data:
+            print(Colors.executor(f"📥 Input data provided: {len(input_data)} characters"))
+        print(Colors.header(f"{'='*80}\n"))
         
         while step_number <= max_steps and not budget.exceeded:
             logger.info(f"Executing step {step_number}")
             
-            if self.verbose:
-                print(Colors.executor(f"\n{'─'*80}"))
-                print(Colors.executor(f"📝 STEP {step_number}: Evaluating next action..."))
-                print(Colors.executor(f"{'─'*80}"))
+            # Always show step progress
+            print(Colors.executor(f"\n{'─'*80}"))
+            print(Colors.executor(f"📝 STEP {step_number}: Evaluating next action..."))
+            print(Colors.executor(f"{'─'*80}"))
             
-            # Call LLM to decide next action
+            # Call LLM to decide next action (now with streaming and real-time output)
             evaluation = self._evaluate_next_step(
                 workflow_content,
-                tools_context,
+                tools_config,  # Pass tools_config instead of formatted string
                 budget
             )
-            
-            if self.verbose:
-                reasoning = evaluation.get('reasoning', 'N/A')
-                if len(reasoning) > 200:
-                    reasoning = reasoning[:200] + "..."
-                print(Colors.executor(f"💭 Reasoning: {reasoning}"))
             
             # Check if goal achieved
             if evaluation.get("goal_achieved", False):
                 logger.info("Workflow goal achieved")
-                if self.verbose:
-                    print(Colors.success(f"\n{'='*80}"))
-                    print(Colors.success(f"✅ EXECUTOR AGENT: WORKFLOW COMPLETE!"))
-                    print(Colors.success(f"{'='*80}"))
-                    print(Colors.success(f"📊 Summary: {evaluation.get('reasoning', 'Workflow completed successfully')}"))
-                    print(Colors.success(f"{'='*80}\n"))
+                print(Colors.success(f"\n{'='*80}"))
+                print(Colors.success(f"✅ EXECUTOR AGENT: WORKFLOW COMPLETE!"))
+                print(Colors.success(f"{'='*80}"))
+                print(Colors.success(f"📊 Summary: {evaluation.get('reasoning', 'Workflow completed successfully')}"))
+                print(Colors.success(f"{'='*80}\n"))
                 self.current_trace.status = SessionStatus.COMPLETED
                 self.current_trace.final_summary = evaluation.get("reasoning", "Workflow completed successfully")
                 break
@@ -236,10 +243,9 @@ class ExecutorAgent:
             clarification = evaluation.get("clarification_request")
             if clarification:
                 logger.info(f"Executor needs clarification: {clarification.get('question')}")
-                if self.verbose:
-                    print(Colors.warning(f"\n❓ EXECUTOR: CLARIFICATION NEEDED"))
-                    print(Colors.warning(f"   Question: {clarification.get('question')}"))
-                    print(Colors.warning(f"   Context: {clarification.get('context')}"))
+                print(Colors.warning(f"\n❓ EXECUTOR: CLARIFICATION NEEDED"))
+                print(Colors.warning(f"   Question: {clarification.get('question')}"))
+                print(Colors.warning(f"   Context: {clarification.get('context')}"))
                 self.current_trace.clarification_requests.append(
                     ClarificationRequest(
                         question=clarification.get("question", ""),
@@ -254,75 +260,76 @@ class ExecutorAgent:
             action = evaluation.get("next_action")
             if not action:
                 logger.warning("No action proposed")
-                if self.verbose:
-                    print(Colors.error(f"\n❌ EXECUTOR ERROR: No action proposed by LLM"))
+                print(Colors.error(f"\n❌ EXECUTOR ERROR: No action proposed by LLM"))
                 self.current_trace.status = SessionStatus.FAILED
                 self.current_trace.final_summary = evaluation.get("reasoning", "No action could be determined")
                 break
             
-            # Execute the action
-            if self.verbose:
-                print(Colors.executor(f"\n🔧 Executing action:"))
-                print(Colors.executor(f"   Tool: {action.get('tool_server')}/{action.get('tool_name')}"))
-                print(Colors.executor(f"   Description: {action.get('description')}"))
-                params_str = json.dumps(action.get('parameters', {}), indent=2)
-                if len(params_str) > 300:
-                    params_str = params_str[:300] + "..."
-                print(Colors.executor(f"   Parameters: {params_str}"))
+            # Execute the action - always show what we're doing
+            print(Colors.executor(f"\n🔧 Executing action:"))
+            print(Colors.executor(f"   Tool: {action.get('tool_server')}/{action.get('tool_name')}"))
+            desc = action.get('description', '')
+            if desc and len(desc) > 150:
+                desc = desc[:150] + "..."
+            if desc:
+                print(Colors.executor(f"   Description: {desc}"))
+            params_str = json.dumps(action.get('parameters', {}), indent=2)
+            if len(params_str) > 300:
+                params_str = params_str[:300] + "..."
+            print(Colors.executor(f"   Parameters: {params_str}"))
             
-            step_exec = self._execute_step(
+            step_exec = await self._execute_step(
                 step_number,
                 action,
                 evaluation.get("reasoning", ""),
                 budget
             )
             
-            if self.verbose:
-                status_icon = {
-                    ActionStatus.COMPLETED: "✅",
-                    ActionStatus.FAILED: "❌",
-                    ActionStatus.PENDING: "⏳",
-                    ActionStatus.SKIPPED: "⊘"
-                }.get(step_exec.status, "❓")
-                
-                # Use different color based on status
-                if step_exec.status == ActionStatus.COMPLETED:
-                    status_msg = Colors.success(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
-                elif step_exec.status == ActionStatus.FAILED:
-                    status_msg = Colors.error(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
-                else:
-                    status_msg = Colors.executor(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
-                print(status_msg)
-                
-                if step_exec.result:
-                    result_str = json.dumps(step_exec.result, indent=2)
-                    if len(result_str) > 500:
-                        result_str = result_str[:500] + "..."
-                    print(Colors.executor(f"   Result: {result_str}"))
-                
-                if step_exec.error:
-                    print(Colors.error(f"   ❌ Error: {step_exec.error}"))
-                
-                if step_exec.validation_results:
-                    print(Colors.executor(f"   Validations:"))
-                    for v in step_exec.validation_results:
-                        v_icon = "✅" if v.get("passed") else "❌"
-                        if v.get("passed"):
-                            print(Colors.success(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
-                        else:
-                            print(Colors.error(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
+            # Always show step results
+            status_icon = {
+                ActionStatus.COMPLETED: "✅",
+                ActionStatus.FAILED: "❌",
+                ActionStatus.PENDING: "⏳",
+                ActionStatus.SKIPPED: "⊘"
+            }.get(step_exec.status, "❓")
+            
+            # Use different color based on status
+            if step_exec.status == ActionStatus.COMPLETED:
+                status_msg = Colors.success(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
+            elif step_exec.status == ActionStatus.FAILED:
+                status_msg = Colors.error(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
+            else:
+                status_msg = Colors.executor(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
+            print(status_msg)
+            
+            if step_exec.result:
+                result_str = json.dumps(step_exec.result, indent=2)
+                if len(result_str) > 500:
+                    result_str = result_str[:500] + "..."
+                print(Colors.executor(f"   Result: {result_str}"))
+            
+            if step_exec.error:
+                print(Colors.error(f"   ❌ Error: {step_exec.error}"))
+            
+            if step_exec.validation_results:
+                print(Colors.executor(f"   Validations:"))
+                for v in step_exec.validation_results:
+                    v_icon = "✅" if v.get("passed") else "❌"
+                    if v.get("passed"):
+                        print(Colors.success(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
+                    else:
+                        print(Colors.error(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
             
             self.current_trace.steps.append(step_exec)
             
             # Check if step failed critically
             if step_exec.status == ActionStatus.FAILED:
                 logger.error(f"Step {step_number} failed: {step_exec.error}")
-                if self.verbose:
-                    print(Colors.error(f"\n{'='*80}"))
-                    print(Colors.error(f"❌ EXECUTOR: WORKFLOW FAILED AT STEP {step_number}"))
-                    print(Colors.error(f"{'='*80}"))
-                    print(Colors.error(f"Error: {step_exec.error}"))
-                    print(Colors.error(f"{'='*80}\n"))
+                print(Colors.error(f"\n{'='*80}"))
+                print(Colors.error(f"❌ EXECUTOR: WORKFLOW FAILED AT STEP {step_number}"))
+                print(Colors.error(f"{'='*80}"))
+                print(Colors.error(f"Error: {step_exec.error}"))
+                print(Colors.error(f"{'='*80}\n"))
                 self.current_trace.status = SessionStatus.FAILED
                 self.current_trace.final_summary = f"Failed at step {step_number}: {step_exec.error}"
                 break
@@ -332,19 +339,17 @@ class ExecutorAgent:
         # Handle timeout
         if step_number > max_steps:
             logger.warning(f"Reached max steps limit: {max_steps}")
-            if self.verbose:
-                print(Colors.warning(f"\n{'='*80}"))
-                print(Colors.warning(f"⚠️  EXECUTOR: WORKFLOW TIMEOUT - Exceeded max steps ({max_steps})"))
-                print(Colors.warning(f"{'='*80}\n"))
+            print(Colors.warning(f"\n{'='*80}"))
+            print(Colors.warning(f"⚠️  EXECUTOR: WORKFLOW TIMEOUT - Exceeded max steps ({max_steps})"))
+            print(Colors.warning(f"{'='*80}\n"))
             self.current_trace.status = SessionStatus.FAILED
             self.current_trace.final_summary = f"Exceeded maximum steps ({max_steps})"
         
         if budget.exceeded:
             logger.warning("Token budget exceeded")
-            if self.verbose:
-                print(Colors.warning(f"\n{'='*80}"))
-                print(Colors.warning(f"⚠️  EXECUTOR: TOKEN BUDGET EXCEEDED"))
-                print(Colors.warning(f"{'='*80}\n"))
+            print(Colors.warning(f"\n{'='*80}"))
+            print(Colors.warning(f"⚠️  EXECUTOR: TOKEN BUDGET EXCEEDED"))
+            print(Colors.warning(f"{'='*80}\n"))
             self.current_trace.status = SessionStatus.FAILED
             self.current_trace.final_summary = "Token budget exceeded"
         
@@ -353,78 +358,86 @@ class ExecutorAgent:
         
         logger.info(f"Workflow execution complete. Status: {self.current_trace.status.value}")
         
-        if self.verbose:
-            completed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.COMPLETED)
-            failed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.FAILED)
-            
-            print(Colors.header(f"\n{'='*80}"))
-            print(Colors.header(f"🏁 EXECUTOR AGENT: EXECUTION COMPLETE"))
-            print(Colors.header(f"{'='*80}"))
-            print(Colors.executor(f"Status: {self.current_trace.status.value}"))
-            print(Colors.executor(f"Total Steps: {len(self.current_trace.steps)}"))
-            print(Colors.success(f"Completed: {completed}"))
-            if failed > 0:
-                print(Colors.error(f"Failed: {failed}"))
-            else:
-                print(Colors.executor(f"Failed: {failed}"))
-            if self.current_trace.final_summary:
-                print(Colors.executor(f"Summary: {self.current_trace.final_summary}"))
-            print(Colors.header(f"{'='*80}\n"))
+        # Always show final summary
+        completed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.COMPLETED)
+        failed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.FAILED)
+        
+        print(Colors.header(f"\n{'='*80}"))
+        print(Colors.header(f"🏁 EXECUTOR AGENT: EXECUTION COMPLETE"))
+        print(Colors.header(f"{'='*80}"))
+        print(Colors.executor(f"Status: {self.current_trace.status.value}"))
+        print(Colors.executor(f"Total Steps: {len(self.current_trace.steps)}"))
+        print(Colors.success(f"Completed: {completed}"))
+        if failed > 0:
+            print(Colors.error(f"Failed: {failed}"))
+        else:
+            print(Colors.executor(f"Failed: {failed}"))
+        if self.current_trace.final_summary:
+            summary = self.current_trace.final_summary
+            if len(summary) > 200:
+                summary = summary[:200] + "..."
+            print(Colors.executor(f"Summary: {summary}"))
+        print(Colors.header(f"{'='*80}\n"))
         
         return self.current_trace
-    
-    def _format_tools_context(self, tools_config: ToolConfig) -> str:
-        """Format available tools for LLM context"""
-        lines = ["AVAILABLE TOOLS (fixed set from tools.json):"]
-        lines.append("")
-        
-        for tool in tools_config.tools:
-            server = tool.get("server", "unknown")
-            tool_name = tool.get("tool", "unknown")
-            desc = tool.get("description", "No description")
-            lines.append(f"- {server}/{tool_name}")
-            lines.append(f"  Description: {desc}")
-            
-            # Note: Full tool details would be fetched from tool_executor
-            # For now, we'll rely on the LLM's knowledge + description
-        
-        return "\n".join(lines)
     
     def _evaluate_next_step(
         self,
         workflow_content: str,
-        tools_context: str,
+        tools_config: ToolConfig,
         budget: TokenBudget
     ) -> Dict[str, Any]:
         """
         Ask LLM what to do next based on workflow and execution so far.
+        Uses native Claude API with tool calling (streaming for visibility).
         """
         # Format execution history
         history_str = self._format_execution_history()
         
-        system_prompt = f"""You are an executor agent. Your job is to execute a workflow step-by-step.
-
-WORKFLOW TO EXECUTE:
----
-{workflow_content}
----
-
-{tools_context}
-
-EXECUTION RULES:
-1. Read the workflow carefully and execute it step by step
-2. For each step, propose ONE tool call to execute
-3. After each tool call, validate the result according to validation criteria in the workflow
-4. If validation fails, note it and continue (unless critical)
-5. If you need clarification from the user, request it
-6. When all steps are complete and validated, mark goal_achieved as true
-
-IMPORTANT:
-- Only use tools listed in AVAILABLE TOOLS above
-- Follow the workflow instructions precisely
-- Execute steps sequentially - one step at a time
-- Validate results according to the Validation section in workflow
-- If stuck or need user input, ask for clarification"""
+        # Convert tools to Anthropic format
+        anthropic_tools = self._convert_tools_to_anthropic_format(tools_config)
+        
+        # Build system prompt with input data if provided
+        system_prompt_parts = [
+            "You are an executor agent. Your job is to execute a workflow step-by-step.",
+            "",
+            "WORKFLOW TO EXECUTE:",
+            "---",
+            workflow_content,
+            "---"
+        ]
+        
+        # Add input data section if provided
+        if self.input_data:
+            system_prompt_parts.extend([
+                "",
+                "INPUT DATA FOR THIS WORKFLOW:",
+                "---",
+                self.input_data,
+                "---",
+                "",
+                "Use the input data above to fill in any variables or parameters needed by the workflow."
+            ])
+        
+        system_prompt_parts.extend([
+            "",
+            "EXECUTION RULES:",
+            "1. Read the workflow carefully and execute it step by step",
+            "2. For each step, use ONE tool call to execute the action",
+            "3. Use the INPUT DATA to provide actual values when the workflow references variables",
+            "4. After each tool call, assess if the result matches the workflow's validation criteria",
+            "5. If you need clarification from the user, use request_clarification tool",
+            "6. When all steps are complete and validated, use mark_workflow_complete tool",
+            "",
+            "IMPORTANT:",
+            "- Execute steps sequentially - one step at a time",
+            "- ALWAYS explain your reasoning before calling a tool",
+            "- Use actual values from INPUT DATA section when workflow mentions variables",
+            "- Validate results according to the Validation section in workflow",
+            "- If stuck or need user input, call request_clarification"
+        ])
+        
+        system_prompt = "\n".join(system_prompt_parts)
 
         user_message = f"""EXECUTION HISTORY SO FAR:
 {history_str}
@@ -433,33 +446,111 @@ IMPORTANT:
 
 Based on the workflow above and execution so far, what should we do next?
 
-Respond with JSON:
-{{
-    "goal_achieved": true/false,
-    "reasoning": "Current analysis and next step plan...",
-    
-    // EITHER propose an action:
-    "next_action": {{
-        "tool_server": "server_name",
-        "tool_name": "function_name",
-        "parameters": {{...}},
-        "description": "What this step accomplishes",
-        "validation_checks": ["check 1", "check 2"]  // From workflow validation section
-    }} or null,
-    
-    // OR ask for clarification:
-    "clarification_request": {{
-        "question": "What information do you need?",
-        "context": "Why you need it"
-    }} or null
-}}"""
+Explain your reasoning, then call the appropriate tool."""
 
-        response, tokens, input_tokens = self._call_claude(system_prompt, user_message)
-        budget.add_tokens(tokens)
+        # Use streaming API with tools
+        print(Colors.executor("\n💭 Executor reasoning..."))
         
-        return self._parse_json_response(response)
+        response_text = ""
+        tool_uses = []
+        
+        try:
+            with self.client.messages.stream(
+                model=self.model,
+                max_tokens=8000,
+                temperature=0.1,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+                tools=anthropic_tools
+            ) as stream:
+                for event in stream:
+                    if event.type == "content_block_start":
+                        if hasattr(event, 'content_block') and event.content_block.type == "text":
+                            pass  # Text block starting
+                    elif event.type == "content_block_delta":
+                        if hasattr(event, 'delta'):
+                            if event.delta.type == "text_delta":
+                                # Print reasoning in real-time
+                                text = event.delta.text
+                                print(Colors.executor(text), end="", flush=True)
+                                response_text += text
+                            elif event.delta.type == "input_json_delta":
+                                # Tool input being streamed
+                                pass
+                
+                # Get final message
+                final_message = stream.get_final_message()
+                
+                # Extract tool uses
+                for block in final_message.content:
+                    if block.type == "tool_use":
+                        tool_uses.append(block)
+                
+                # Track tokens
+                if hasattr(final_message, 'usage'):
+                    budget.add_tokens(final_message.usage.input_tokens + final_message.usage.output_tokens)
+        
+        except Exception as e:
+            logger.error(f"Error in evaluate_next_step: {e}")
+            raise
+        
+        print()  # New line after reasoning
+        
+        # Process tool calls
+        if not tool_uses:
+            # No tool call - might be just thinking
+            return {
+                "reasoning": response_text,
+                "goal_achieved": False,
+                "next_action": None,
+                "clarification_request": None
+            }
+        
+        # Handle tool calls
+        tool_use = tool_uses[0]  # Take first tool call
+        tool_name = tool_use.name
+        tool_input = tool_use.input
+        
+        # Check for special control tools
+        if tool_name == "request_clarification":
+            return {
+                "reasoning": response_text,
+                "goal_achieved": False,
+                "next_action": None,
+                "clarification_request": {
+                    "question": tool_input.get("question", ""),
+                    "context": tool_input.get("context", "")
+                }
+            }
+        
+        elif tool_name == "mark_workflow_complete":
+            return {
+                "reasoning": tool_input.get("summary", response_text),
+                "goal_achieved": True,
+                "next_action": None,
+                "clarification_request": None
+            }
+        
+        else:
+            # Regular MCP tool call - parse server__tool format
+            if "__" in tool_name:
+                server, tool = tool_name.split("__", 1)
+                return {
+                    "reasoning": response_text,
+                    "goal_achieved": False,
+                    "next_action": {
+                        "tool_server": server,
+                        "tool_name": tool,
+                        "parameters": tool_input,
+                        "description": response_text[:200] if response_text else f"Execute {tool}",
+                        "validation_checks": []
+                    },
+                    "clarification_request": None
+                }
+            else:
+                raise ValueError(f"Invalid tool name format: {tool_name}")
     
-    def _execute_step(
+    async def _execute_step(
         self,
         step_number: int,
         action: Dict[str, Any],
@@ -489,17 +580,25 @@ Respond with JSON:
         try:
             # Execute tool via injected executor
             logger.info(f"Calling tool: {tool_server}/{tool_name}")
-            if self.verbose:
-                print(Colors.executor(f"   ⚙️  Calling tool executor..."))
+            print(Colors.executor(f"   ⚙️  Calling MCP tool..."))
             
-            result = self.tool_executor.execute_tool(
-                server=tool_server,
-                tool=tool_name,
-                parameters=parameters
-            )
+            # Handle both async and sync tool executors
+            import asyncio
+            import inspect
+            if inspect.iscoroutinefunction(self.tool_executor.execute_tool):
+                result = await self.tool_executor.execute_tool(
+                    server=tool_server,
+                    tool=tool_name,
+                    parameters=parameters
+                )
+            else:
+                result = self.tool_executor.execute_tool(
+                    server=tool_server,
+                    tool=tool_name,
+                    parameters=parameters
+                )
             
-            if self.verbose:
-                print(Colors.executor(f"   ✓ Tool execution returned"))
+            print(Colors.executor(f"   ✓ Tool execution returned"))
             
             step_exec.result = result
             
@@ -611,76 +710,13 @@ Respond with JSON:
             lines.append("")
         
         return "\n".join(lines)
-    
-    def _call_claude(
-        self,
-        system_prompt: str,
-        user_message: str,
-        temperature: float = 0.1
-    ) -> Tuple[str, int, int]:
-        """Make a call to Claude API. Returns (response, total_tokens, input_tokens)."""
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=8000,
-                temperature=temperature,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}]
-            )
-            
-            input_tokens = response.usage.input_tokens
-            output_tokens = response.usage.output_tokens
-            total_tokens = input_tokens + output_tokens
-            logger.info(f"Claude API call: {input_tokens} in, {output_tokens} out")
-            
-            return response.content[0].text, total_tokens, input_tokens
-            
-        except Exception as e:
-            logger.error(f"Error calling Claude API: {e}")
-            raise
-    
-    def _parse_json_response(self, response: str) -> Dict[str, Any]:
-        """Parse JSON from Claude's response, handling markdown code blocks."""
-        response = response.strip()
-        
-        # Extract from markdown code blocks
-        if "```json" in response:
-            start = response.find("```json") + 7
-            end = response.find("```", start)
-            if end != -1:
-                response = response[start:end].strip()
-        elif "```" in response:
-            parts = response.split("```")
-            for part in parts[1:]:
-                if "{" in part:
-                    response = part.strip()
-                    break
-        
-        # Find JSON object
-        start_idx = response.find('{')
-        if start_idx == -1:
-            raise ValueError("No JSON object found in response")
-        
-        # Find matching closing brace
-        brace_count = 0
-        end_idx = start_idx
-        for i, char in enumerate(response[start_idx:], start_idx):
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    end_idx = i + 1
-                    break
-        
-        json_str = response[start_idx:end_idx]
-        return json.loads(json_str)
 
 
-def execute_workflow_from_files(
+async def execute_workflow_from_files(
     workflow_path: str,
     tools_path: str,
-    tool_executor
+    tool_executor,
+    input_data: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Convenience function to execute workflow from file paths.
@@ -688,7 +724,8 @@ def execute_workflow_from_files(
     Args:
         workflow_path: Path to workflow.md
         tools_path: Path to tools.json  
-        tool_executor: Tool executor instance (e.g., ToolRegistryClient)
+        tool_executor: Tool executor instance (e.g., MCPToolExecutor)
+        input_data: Optional input data/variables for the workflow
     
     Returns:
         Execution trace as JSON dict
@@ -700,6 +737,10 @@ def execute_workflow_from_files(
     
     # Create and run executor
     executor = ExecutorAgent(tool_executor=tool_executor)
-    trace = executor.execute_workflow(workflow_path, tools_config)
+    trace = await executor.execute_workflow(
+        workflow_path, 
+        tools_config,
+        input_data=input_data
+    )
     
     return trace.to_json()

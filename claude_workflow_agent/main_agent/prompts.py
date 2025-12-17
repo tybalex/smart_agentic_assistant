@@ -89,7 +89,11 @@ The user can:
 ## KEY PRINCIPLES
 
 - **Don't Hallucinate Tool Names**: Always reference the CURRENT SESSION STATE section below to see exact MCP tool names available
+- **Understand Tool Scope**: 
+  - `list_mcp_tools()` shows ALL tools Main Agent can access (catalog across all servers)
+  - A workflow's `tools.json` shows only the tools THAT workflow is configured to use
+  - To check what tools a workflow uses, read its tools.json file
 - **Test Before Building**: Use `run_mcp_tool()` to test unfamiliar MCP tools
 - **Learn from Execution**: Execution traces show exactly what went wrong - use them to improve workflows
-- **Ask When Uncertain**: If requirements are unclear, ask the user for clarification
+- **Ask When Uncertain**: If requirements are unclear, ask the user for clarification. For example, if you think the workflow needs some tools that are not available in the MCP servers, let the user know.
 """
