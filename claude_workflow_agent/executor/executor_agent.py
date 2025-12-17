@@ -22,6 +22,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ANSI color codes for terminal output
+class Colors:
+    """ANSI color codes for colored terminal output - Purple/Magenta theme for Executor"""
+    # Main executor color - purple/magenta theme (distinct from Main Agent's cyan/yellow)
+    EXECUTOR = '\033[35m'  # Magenta (dark purple)
+    EXECUTOR_BRIGHT = '\033[95m'  # Bright magenta
+    HEADER = '\033[95m'    # Bright magenta for headers
+    SUCCESS = '\033[92m'   # Green (shared - universal success color)
+    WARNING = '\033[94m'   # Blue (different from Main Agent's yellow)
+    FAIL = '\033[91m'      # Red (shared - universal error color)
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    RESET = '\033[0m'      # Reset to default
+    
+    @staticmethod
+    def executor(text):
+        """Wrap text in executor color (magenta)"""
+        return f"{Colors.EXECUTOR}{text}{Colors.RESET}"
+    
+    @staticmethod
+    def success(text):
+        """Wrap text in success color (green - shared)"""
+        return f"{Colors.SUCCESS}{text}{Colors.RESET}"
+    
+    @staticmethod
+    def error(text):
+        """Wrap text in error color (red - shared)"""
+        return f"{Colors.FAIL}{text}{Colors.RESET}"
+    
+    @staticmethod
+    def warning(text):
+        """Wrap text in warning color (blue)"""
+        return f"{Colors.WARNING}{text}{Colors.RESET}"
+    
+    @staticmethod
+    def header(text):
+        """Wrap text in header color (bright magenta + bold)"""
+        return f"{Colors.HEADER}{Colors.BOLD}{text}{Colors.RESET}"
+
 
 class ExecutorAgent:
     """
@@ -32,10 +71,12 @@ class ExecutorAgent:
     def __init__(
         self,
         tool_executor,  # Injected tool executor (will use ToolRegistryClient)
-        model: str = "claude-sonnet-4-20250514"
+        model: str = "claude-sonnet-4-20250514",
+        verbose: bool = False  # Enable verbose output for dev mode
     ):
         self.tool_executor = tool_executor
         self.model = model
+        self.verbose = verbose
         
         # Check for API key
         api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -149,8 +190,21 @@ class ExecutorAgent:
         max_steps = 50  # Safety limit
         budget = TokenBudget(max_tokens=180000)
         
+        if self.verbose:
+            print(Colors.header(f"\n{'='*80}"))
+            print(Colors.header(f"🚀 EXECUTOR AGENT: STARTING WORKFLOW EXECUTION"))
+            print(Colors.header(f"{'='*80}"))
+            print(Colors.executor(f"📁 Workflow: {workflow_path}"))
+            print(Colors.executor(f"🔧 Tools: {len(tools_config.tools)} available"))
+            print(Colors.header(f"{'='*80}\n"))
+        
         while step_number <= max_steps and not budget.exceeded:
             logger.info(f"Executing step {step_number}")
+            
+            if self.verbose:
+                print(Colors.executor(f"\n{'─'*80}"))
+                print(Colors.executor(f"📝 STEP {step_number}: Evaluating next action..."))
+                print(Colors.executor(f"{'─'*80}"))
             
             # Call LLM to decide next action
             evaluation = self._evaluate_next_step(
@@ -159,9 +213,21 @@ class ExecutorAgent:
                 budget
             )
             
+            if self.verbose:
+                reasoning = evaluation.get('reasoning', 'N/A')
+                if len(reasoning) > 200:
+                    reasoning = reasoning[:200] + "..."
+                print(Colors.executor(f"💭 Reasoning: {reasoning}"))
+            
             # Check if goal achieved
             if evaluation.get("goal_achieved", False):
                 logger.info("Workflow goal achieved")
+                if self.verbose:
+                    print(Colors.success(f"\n{'='*80}"))
+                    print(Colors.success(f"✅ EXECUTOR AGENT: WORKFLOW COMPLETE!"))
+                    print(Colors.success(f"{'='*80}"))
+                    print(Colors.success(f"📊 Summary: {evaluation.get('reasoning', 'Workflow completed successfully')}"))
+                    print(Colors.success(f"{'='*80}\n"))
                 self.current_trace.status = SessionStatus.COMPLETED
                 self.current_trace.final_summary = evaluation.get("reasoning", "Workflow completed successfully")
                 break
@@ -170,6 +236,10 @@ class ExecutorAgent:
             clarification = evaluation.get("clarification_request")
             if clarification:
                 logger.info(f"Executor needs clarification: {clarification.get('question')}")
+                if self.verbose:
+                    print(Colors.warning(f"\n❓ EXECUTOR: CLARIFICATION NEEDED"))
+                    print(Colors.warning(f"   Question: {clarification.get('question')}"))
+                    print(Colors.warning(f"   Context: {clarification.get('context')}"))
                 self.current_trace.clarification_requests.append(
                     ClarificationRequest(
                         question=clarification.get("question", ""),
@@ -184,11 +254,22 @@ class ExecutorAgent:
             action = evaluation.get("next_action")
             if not action:
                 logger.warning("No action proposed")
+                if self.verbose:
+                    print(Colors.error(f"\n❌ EXECUTOR ERROR: No action proposed by LLM"))
                 self.current_trace.status = SessionStatus.FAILED
                 self.current_trace.final_summary = evaluation.get("reasoning", "No action could be determined")
                 break
             
             # Execute the action
+            if self.verbose:
+                print(Colors.executor(f"\n🔧 Executing action:"))
+                print(Colors.executor(f"   Tool: {action.get('tool_server')}/{action.get('tool_name')}"))
+                print(Colors.executor(f"   Description: {action.get('description')}"))
+                params_str = json.dumps(action.get('parameters', {}), indent=2)
+                if len(params_str) > 300:
+                    params_str = params_str[:300] + "..."
+                print(Colors.executor(f"   Parameters: {params_str}"))
+            
             step_exec = self._execute_step(
                 step_number,
                 action,
@@ -196,11 +277,52 @@ class ExecutorAgent:
                 budget
             )
             
+            if self.verbose:
+                status_icon = {
+                    ActionStatus.COMPLETED: "✅",
+                    ActionStatus.FAILED: "❌",
+                    ActionStatus.PENDING: "⏳",
+                    ActionStatus.SKIPPED: "⊘"
+                }.get(step_exec.status, "❓")
+                
+                # Use different color based on status
+                if step_exec.status == ActionStatus.COMPLETED:
+                    status_msg = Colors.success(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
+                elif step_exec.status == ActionStatus.FAILED:
+                    status_msg = Colors.error(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
+                else:
+                    status_msg = Colors.executor(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
+                print(status_msg)
+                
+                if step_exec.result:
+                    result_str = json.dumps(step_exec.result, indent=2)
+                    if len(result_str) > 500:
+                        result_str = result_str[:500] + "..."
+                    print(Colors.executor(f"   Result: {result_str}"))
+                
+                if step_exec.error:
+                    print(Colors.error(f"   ❌ Error: {step_exec.error}"))
+                
+                if step_exec.validation_results:
+                    print(Colors.executor(f"   Validations:"))
+                    for v in step_exec.validation_results:
+                        v_icon = "✅" if v.get("passed") else "❌"
+                        if v.get("passed"):
+                            print(Colors.success(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
+                        else:
+                            print(Colors.error(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
+            
             self.current_trace.steps.append(step_exec)
             
             # Check if step failed critically
             if step_exec.status == ActionStatus.FAILED:
                 logger.error(f"Step {step_number} failed: {step_exec.error}")
+                if self.verbose:
+                    print(Colors.error(f"\n{'='*80}"))
+                    print(Colors.error(f"❌ EXECUTOR: WORKFLOW FAILED AT STEP {step_number}"))
+                    print(Colors.error(f"{'='*80}"))
+                    print(Colors.error(f"Error: {step_exec.error}"))
+                    print(Colors.error(f"{'='*80}\n"))
                 self.current_trace.status = SessionStatus.FAILED
                 self.current_trace.final_summary = f"Failed at step {step_number}: {step_exec.error}"
                 break
@@ -210,11 +332,19 @@ class ExecutorAgent:
         # Handle timeout
         if step_number > max_steps:
             logger.warning(f"Reached max steps limit: {max_steps}")
+            if self.verbose:
+                print(Colors.warning(f"\n{'='*80}"))
+                print(Colors.warning(f"⚠️  EXECUTOR: WORKFLOW TIMEOUT - Exceeded max steps ({max_steps})"))
+                print(Colors.warning(f"{'='*80}\n"))
             self.current_trace.status = SessionStatus.FAILED
             self.current_trace.final_summary = f"Exceeded maximum steps ({max_steps})"
         
         if budget.exceeded:
             logger.warning("Token budget exceeded")
+            if self.verbose:
+                print(Colors.warning(f"\n{'='*80}"))
+                print(Colors.warning(f"⚠️  EXECUTOR: TOKEN BUDGET EXCEEDED"))
+                print(Colors.warning(f"{'='*80}\n"))
             self.current_trace.status = SessionStatus.FAILED
             self.current_trace.final_summary = "Token budget exceeded"
         
@@ -222,6 +352,25 @@ class ExecutorAgent:
         self.current_trace.end_time = datetime.now().isoformat()
         
         logger.info(f"Workflow execution complete. Status: {self.current_trace.status.value}")
+        
+        if self.verbose:
+            completed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.COMPLETED)
+            failed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.FAILED)
+            
+            print(Colors.header(f"\n{'='*80}"))
+            print(Colors.header(f"🏁 EXECUTOR AGENT: EXECUTION COMPLETE"))
+            print(Colors.header(f"{'='*80}"))
+            print(Colors.executor(f"Status: {self.current_trace.status.value}"))
+            print(Colors.executor(f"Total Steps: {len(self.current_trace.steps)}"))
+            print(Colors.success(f"Completed: {completed}"))
+            if failed > 0:
+                print(Colors.error(f"Failed: {failed}"))
+            else:
+                print(Colors.executor(f"Failed: {failed}"))
+            if self.current_trace.final_summary:
+                print(Colors.executor(f"Summary: {self.current_trace.final_summary}"))
+            print(Colors.header(f"{'='*80}\n"))
+        
         return self.current_trace
     
     def _format_tools_context(self, tools_config: ToolConfig) -> str:
@@ -340,11 +489,17 @@ Respond with JSON:
         try:
             # Execute tool via injected executor
             logger.info(f"Calling tool: {tool_server}/{tool_name}")
+            if self.verbose:
+                print(Colors.executor(f"   ⚙️  Calling tool executor..."))
+            
             result = self.tool_executor.execute_tool(
                 server=tool_server,
                 tool=tool_name,
                 parameters=parameters
             )
+            
+            if self.verbose:
+                print(Colors.executor(f"   ✓ Tool execution returned"))
             
             step_exec.result = result
             

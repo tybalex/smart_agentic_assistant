@@ -389,15 +389,21 @@ async def execute_workflow(workflow_path: str) -> Dict[str, Any]:
         
         mock_executor = MockExecutor()
         
+        # Check if dev mode is enabled (verbose output)
+        import os
+        dev_mode = os.environ.get("DEV_MODE", "").lower() in ("true", "1", "yes")
+        
         # Create and run executor
-        print("⏳ Executing workflow with Executor Agent...")
-        executor = ExecutorAgent(tool_executor=mock_executor)
+        if not dev_mode:
+            print("⏳ Executing workflow with Executor Agent...")
+        executor = ExecutorAgent(tool_executor=mock_executor, verbose=dev_mode)
         trace = executor.execute_workflow(
             workflow_path=str(workflow_file),
             tools_config=tools_config,
             workflow_content=workflow_content
         )
-        print("✅ Workflow execution completed")
+        if not dev_mode:
+            print("✅ Workflow execution completed")
         
         # Check if execution was successful
         from executor.models import SessionStatus, ActionStatus
