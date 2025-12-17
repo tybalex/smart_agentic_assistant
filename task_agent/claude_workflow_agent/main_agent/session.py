@@ -2,10 +2,16 @@
 Workflow Session Management
 """
 
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from constants import MAX_ITERATIONS
 
 
 @dataclass
@@ -51,7 +57,7 @@ class WorkflowSession:
     # Session metadata
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     iteration_count: int = 0
-    max_iterations: int = 5
+    max_iterations: int = MAX_ITERATIONS
     
     def add_user_message(self, content: str):
         """Add user message to conversation"""

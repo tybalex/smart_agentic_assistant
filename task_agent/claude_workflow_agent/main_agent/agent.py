@@ -6,9 +6,21 @@ import os
 import json
 import asyncio
 import logging
+import sys
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from anthropic import Anthropic
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from constants import (
+    MAX_TOOL_ROUNDS,
+    MAX_TOKENS_PER_REQUEST,
+    AGENT_TEMPERATURE,
+    TOOL_RESULT_SHORT_DISPLAY_LENGTH,
+    TOOL_RESULT_FULL_DISPLAY_LENGTH
+)
 from .prompts import MAIN_AGENT_SYSTEM_PROMPT
 from .session import WorkflowSession, Message
 from .tools import AVAILABLE_TOOLS, ANTHROPIC_TOOLS
@@ -77,16 +89,19 @@ class MainAgent:
         tool_results = []
         
         # Allow multiple tool calls in a row
-        max_tool_rounds = 5
+        max_tool_rounds = MAX_TOOL_ROUNDS
         for round_num in range(max_tool_rounds):
-            response = self.client.messages.create(
+            # Use streaming for large token requests (required for >10k tokens / 10+ min requests)
+            with self.client.messages.stream(
                 model=self.model,
-                max_tokens=4000,
-                temperature=0.1,
+                max_tokens=MAX_TOKENS_PER_REQUEST,
+                temperature=AGENT_TEMPERATURE,
                 system=system_prompt,
                 messages=messages,
-                tools=ANTHROPIC_TOOLS  # Native tool calling!
-            )
+                tools=ANTHROPIC_TOOLS,
+            ) as stream:
+                # Accumulate the response from stream
+                response = stream.get_final_message()
             
             # Debug in dev mode
             if self.dev_mode:
@@ -274,8 +289,8 @@ class MainAgent:
             for key, value in tool_call['arguments'].items():
                 # Truncate long values
                 value_str = str(value)
-                if len(value_str) > 100:
-                    value_str = value_str[:100] + "..."
+                if len(value_str) > TOOL_RESULT_SHORT_DISPLAY_LENGTH:
+                    value_str = value_str[:TOOL_RESULT_SHORT_DISPLAY_LENGTH] + "..."
                 print(f"{self.COLOR_TOOL}     {key}: {value_str}{self.COLOR_RESET}")
         print()
     
@@ -296,8 +311,8 @@ class MainAgent:
         for key, value in result.items():
             if key not in skip_keys:
                 value_str = str(value)
-                if len(value_str) > 150:
-                    value_str = value_str[:150] + "..."
+                if len(value_str) > TOOL_RESULT_FULL_DISPLAY_LENGTH:
+                    value_str = value_str[:TOOL_RESULT_FULL_DISPLAY_LENGTH] + "..."
                 print(f"{color}   {key}: {value_str}{self.COLOR_RESET}")
         
         print(f"{self.COLOR_RESULT}{'─' * 80}{self.COLOR_RESET}")

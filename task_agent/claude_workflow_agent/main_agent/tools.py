@@ -10,6 +10,7 @@ from typing import Dict, List, Any
 # Add paths for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from constants import MCP_TOOL_CALL_TIMEOUT, DEFAULT_WORKFLOWS_DIR, WORKFLOW_FILENAME
 from tools.mcp_registry import create_registry_from_config
 from executor.executor_agent import ExecutorAgent
 from executor.models import ToolConfig, ExecutionTrace
@@ -190,7 +191,7 @@ async def run_mcp_tool(server: str, tool: str, parameters: Dict[str, Any]) -> Di
                     tool_name=tool,
                     arguments=parameters
                 ),
-                timeout=30.0
+                timeout=MCP_TOOL_CALL_TIMEOUT
             )
             
             print(f"✅ Tool executed successfully")
@@ -404,14 +405,14 @@ def list_workflows(directory: str = None) -> Dict[str, Any]:
     Looks for subdirectories containing workflow.md files.
     
     Args:
-        directory: Directory to search (default: ./workflows)
+        directory: Directory to search (default: from constants.DEFAULT_WORKFLOWS_DIR)
     
     Returns:
         Dict with: {success: bool, workflows: List[{path, name, directory}]}
     """
     try:
         if directory is None:
-            directory = "./workflows"
+            directory = DEFAULT_WORKFLOWS_DIR
         
         dir_path = Path(directory)
         

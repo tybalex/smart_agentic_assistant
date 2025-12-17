@@ -10,6 +10,7 @@ import threading
 import time
 import webbrowser
 import logging
+import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -21,6 +22,20 @@ from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from constants import (
+    MCP_OAUTH_CALLBACK_TIMEOUT,
+    MCP_OAUTH_CALLBACK_TIMEOUT_DISCOVERY,
+    MCP_SESSION_CALLBACK_TIMEOUT,
+    MCP_HTTP_CLIENT_TIMEOUT,
+    MCP_HTTP_CLIENT_TIMEOUT_DISCOVERY,
+    CALLBACK_SERVER_JOIN_TIMEOUT,
+    MCP_TOKENS_DIR,
+    TOKEN_EXPIRATION_BUFFER
+)
 
 # Suppress verbose logging from httpx and mcp
 logging.getLogger("httpx").setLevel(logging.ERROR)
@@ -52,36 +67,76 @@ class InMemoryTokenStorage(TokenStorage):
 
 
 class FileBasedTokenStorage(TokenStorage):
-    """Persistent file-based token storage for OAuth"""
+    """Persistent file-based token storage for OAuth with expiration tracking"""
     
-    def __init__(self, server_name: str, storage_dir: str = ".mcp_tokens"):
+    def __init__(self, server_name: str, storage_dir: str = None):
         self.server_name = server_name
-        self.storage_dir = Path(storage_dir)
+        self.storage_dir = Path(storage_dir or MCP_TOKENS_DIR)
         self.storage_dir.mkdir(exist_ok=True)
         
         self.token_file = self.storage_dir / f"{server_name}_tokens.json"
         self.client_info_file = self.storage_dir / f"{server_name}_client.json"
+        self.metadata_file = self.storage_dir / f"{server_name}_metadata.json"
     
     async def get_tokens(self) -> OAuthToken | None:
-        """Load tokens from file"""
+        """Load tokens from file, checking expiration"""
         if not self.token_file.exists():
             return None
         
         try:
             with open(self.token_file, 'r') as f:
                 data = json.load(f)
+            
+            # Check if token is expired
+            if self._is_token_expired():
+                logging.info(f"Token for {self.server_name} is expired or expiring soon, OAuth provider will refresh using refresh_token")
+                # Return the token anyway - MCP's OAuthClientProvider will automatically
+                # refresh it using the refresh_token when it detects expiration
+            
             return OAuthToken(**data)
         except Exception as e:
             logging.warning(f"Failed to load tokens for {self.server_name}: {e}")
             return None
     
+    def _is_token_expired(self) -> bool:
+        """Check if the cached token is expired"""
+        if not self.metadata_file.exists():
+            return False  # No metadata, assume not expired
+        
+        try:
+            with open(self.metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            saved_at = metadata.get('saved_at', 0)
+            expires_in = metadata.get('expires_in', 0)
+            
+            if saved_at == 0 or expires_in == 0:
+                return False  # No expiration data
+            
+            # Check if expired (with buffer for proactive refresh)
+            elapsed = time.time() - saved_at
+            return elapsed >= (expires_in - TOKEN_EXPIRATION_BUFFER)
+            
+        except Exception as e:
+            logging.debug(f"Failed to check expiration: {e}")
+            return False  # If we can't check, assume not expired
+    
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        """Save tokens to file"""
+        """Save tokens to file with timestamp for expiration tracking"""
         try:
             # Use model_dump with mode='json' to handle special types
             data = tokens.model_dump(mode='json')
             with open(self.token_file, 'w') as f:
                 json.dump(data, f, indent=2)
+            
+            # Save metadata for expiration tracking
+            metadata = {
+                'saved_at': time.time(),
+                'expires_in': data.get('expires_in', 3600)  # Default 1 hour if not specified
+            }
+            with open(self.metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+                
         except Exception as e:
             logging.error(f"Failed to save tokens for {self.server_name}: {e}")
     
@@ -166,9 +221,9 @@ class CallbackServer:
             self.server.shutdown()
             self.server.server_close()
         if self.thread:
-            self.thread.join(timeout=1)
+            self.thread.join(timeout=CALLBACK_SERVER_JOIN_TIMEOUT)
     
-    def wait_for_callback(self, timeout=300):
+    def wait_for_callback(self, timeout=MCP_SESSION_CALLBACK_TIMEOUT):
         start_time = time.time()
         while time.time() - start_time < timeout:
             if self.callback_data["authorization_code"]:
@@ -178,7 +233,7 @@ class CallbackServer:
             time.sleep(0.1)
         raise Exception("Timeout waiting for OAuth callback")
     
-    async def wait_for_callback_async(self, timeout=300):
+    async def wait_for_callback_async(self, timeout=MCP_SESSION_CALLBACK_TIMEOUT):
         """Async version of wait_for_callback"""
         start_time = time.time()
         while time.time() - start_time < timeout:
@@ -245,7 +300,7 @@ class MCPToolRegistry:
         
         async def callback_handler() -> tuple[str, str | None]:
             try:
-                auth_code = await self._callback_server.wait_for_callback_async(timeout=120)
+                auth_code = await self._callback_server.wait_for_callback_async(timeout=MCP_OAUTH_CALLBACK_TIMEOUT_DISCOVERY)
                 return auth_code, self._callback_server.get_state()
             except Exception as e:
                 print(f"\n❌ OAuth callback failed: {e}")
@@ -287,7 +342,7 @@ class MCPToolRegistry:
         # Connect with streamable HTTP and discover tools immediately
         tools = []
         try:
-            async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True, timeout=60.0) as custom_client:
+            async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True, timeout=MCP_HTTP_CLIENT_TIMEOUT_DISCOVERY) as custom_client:
                 async with streamable_http_client(
                     url=server_url,
                     http_client=custom_client,
@@ -454,7 +509,7 @@ class MCPToolRegistry:
         
         async def callback_handler() -> tuple[str, str | None]:
             try:
-                auth_code = await self._callback_server.wait_for_callback_async(timeout=60)
+                auth_code = await self._callback_server.wait_for_callback_async(timeout=MCP_OAUTH_CALLBACK_TIMEOUT)
                 return auth_code, self._callback_server.get_state()
             except Exception as e:
                 raise
@@ -480,7 +535,7 @@ class MCPToolRegistry:
         
         # Connect and call tool
         try:
-            async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True, timeout=30.0) as http_client:
+            async with httpx.AsyncClient(auth=oauth_auth, follow_redirects=True, timeout=MCP_HTTP_CLIENT_TIMEOUT) as http_client:
                 async with streamable_http_client(
                     url=server_url,
                     http_client=http_client,
