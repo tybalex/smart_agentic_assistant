@@ -332,7 +332,7 @@ class MCPToolRegistry:
         })
         
         oauth_auth = OAuthClientProvider(
-            server_url=server_url.replace("/mcp", ""),
+            server_url=server_url,
             client_metadata=client_metadata,
             storage=storage,
             redirect_handler=redirect_handler,
@@ -526,7 +526,7 @@ class MCPToolRegistry:
         })
         
         oauth_auth = OAuthClientProvider(
-            server_url=server_url.replace("/mcp", ""),
+            server_url=server_url,
             client_metadata=client_metadata,
             storage=storage,
             redirect_handler=redirect_handler,
