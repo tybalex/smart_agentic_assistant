@@ -597,7 +597,7 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "select_mcp_tools",
-        "description": "Select MCP tools for workflow and generate tools.json. Call this after writing a workflow to specify which MCP tools it needs.",
+        "description": "Select MCP tools for workflow and generate tools.json. CRITICAL: You MUST call discover_mcp_tools() FIRST to see available tools. NEVER GUESS tool names - only use EXACT names from discovery results. The function will warn you if tool names don't exist.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -607,12 +607,12 @@ ANTHROPIC_TOOLS = [
                 },
                 "tool_list": {
                     "type": "array",
-                    "description": "List of MCP tool objects with server and tool name",
+                    "description": "List of MCP tool objects with EXACT server and tool names from discovery. Example: for sending Slack messages, use 'send_message' NOT 'send_slack_message' or other variations. Check the CURRENT SESSION STATE section for available tools.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "server": {"type": "string", "description": "MCP server name"},
-                            "tool": {"type": "string", "description": "MCP tool name"}
+                            "server": {"type": "string", "description": "EXACT MCP server name from discovery (e.g., 'slack', 'salesforce', 'google-groups')"},
+                            "tool": {"type": "string", "description": "EXACT MCP tool name from discovery (e.g., 'send_message', 'email_message', 'add_group_member'). DO NOT abbreviate, guess, or modify tool names."}
                         },
                         "required": ["server", "tool"]
                     }

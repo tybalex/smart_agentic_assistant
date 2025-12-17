@@ -313,12 +313,31 @@ class MainAgent:
         
         lines = ["## CURRENT SESSION STATE\n"]
         
-        # MCP Tools discovered
+        # MCP Tools discovered - Show actual list of available tools
         if self.session.available_tools:
+            tools_list = self.session.available_tools.get('tools', [])
             lines.append("✅ MCP tools already discovered - DON'T call discover_mcp_tools() again!")
-            lines.append(f"   Available: {len(self.session.available_tools.get('tools', []))} MCP tools")
+            lines.append(f"   Total: {len(tools_list)} tools from {len(self.session.available_tools.get('servers', []))} servers\n")
+            
+            # Group tools by server for easy reference
+            lines.append("### AVAILABLE MCP TOOLS (use EXACT names when calling select_mcp_tools):\n")
+            
+            tools_by_server = {}
+            for tool in tools_list:
+                server = tool['server']
+                if server not in tools_by_server:
+                    tools_by_server[server] = []
+                tools_by_server[server].append(tool['tool'])
+            
+            for server in sorted(tools_by_server.keys()):
+                tool_names = sorted(tools_by_server[server])
+                lines.append(f"**{server}** ({len(tool_names)} tools):")
+                # Show tools in a compact format
+                lines.append(f"  {', '.join(tool_names)}")
+                lines.append("")
         else:
-            lines.append("❌ MCP tools not yet discovered - call discover_mcp_tools() first")
+            lines.append("❌ MCP tools not yet discovered - call discover_mcp_tools() FIRST before select_mcp_tools()")
+            lines.append("   You MUST discover tools to know what tools exist - DO NOT GUESS tool names!\n")
         
         # Workflow path
         if self.session.workflow_path:
