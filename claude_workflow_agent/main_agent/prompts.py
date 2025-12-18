@@ -64,10 +64,6 @@ You are an intelligent planning agent. For each user request:
    - Adjust your plan if needed
    - If something fails, reason about why and what to try next
 
-## TOOL APPROVAL WORKFLOW
-
-IMPORTANT: All tool calls require user approval before execution.
-
 When you want to use a tool:
 1. Explain your reasoning for why this tool is needed
 2. Propose the tool call with its parameters

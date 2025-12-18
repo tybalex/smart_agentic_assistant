@@ -75,12 +75,45 @@ async def list_mcp_tools(server: str = None) -> Dict[str, Any]:
     global _registry_cache, _discovered_tools_cache
     
     try:
-        # Use in-memory cache if available (within same session)
+        # Create registry if needed
+        if not _registry_cache:
+            _registry_cache = await create_registry_from_config()
+        
+        # If specific server requested, discover from that server only
+        if server:
+            print(f"🔍 Listing MCP tools from server: {server}")
+            
+            # Discover tools from the specific server
+            try:
+                tools = await _registry_cache.discover_tools(server)
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to discover tools from server '{server}': {str(e)}"
+                }
+            
+            # Format tools
+            formatted_tools = []
+            for tool in tools:
+                formatted_tools.append({
+                    "server": server,
+                    "tool": tool["tool"],
+                    "description": tool["description"],
+                    "input_schema": tool.get("input_schema"),
+                    "output_schema": tool.get("output_schema")
+                })
+            
+            return {
+                "success": True,
+                "servers": [server],
+                "tools": formatted_tools,
+                "total": len(formatted_tools)
+            }
+        
+        # No server specified - return all tools (use cache if available)
         if not _discovered_tools_cache:
-            # Need to discover - create registry if needed
+            # Need to discover - get from all servers
             print("🔍 Listing MCP tools from all configured servers...")
-            if not _registry_cache:
-                _registry_cache = await create_registry_from_config()
             
             # Discover all tools
             tools_by_server = await _registry_cache.discover_all_tools()
@@ -107,25 +140,7 @@ async def list_mcp_tools(server: str = None) -> Dict[str, Any]:
             # Cache for session (in-memory only)
             _discovered_tools_cache = result
         
-        # Filter by server if specified
-        if server:
-            cached_tools = _discovered_tools_cache["tools"]
-            filtered_tools = [t for t in cached_tools if t["server"] == server]
-            
-            if not filtered_tools:
-                return {
-                    "success": False,
-                    "error": f"Server '{server}' not found or has no tools. Available servers: {', '.join(_discovered_tools_cache['servers'])}"
-                }
-            
-            return {
-                "success": True,
-                "servers": [server],
-                "tools": filtered_tools,
-                "total": len(filtered_tools)
-            }
-        
-        # Return all tools
+        # Return all tools from cache
         return _discovered_tools_cache
         
     except Exception as e:

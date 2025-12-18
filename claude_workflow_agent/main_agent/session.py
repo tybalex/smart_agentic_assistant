@@ -56,6 +56,7 @@ class WorkflowSession:
     
     # Tool approval workflow
     pending_assistant_content: Optional[List[Any]] = None  # Stores assistant message blocks awaiting tool execution
+    pending_auto_results: Optional[List[Dict[str, Any]]] = None  # Stores auto-executed tool results to include with approved tools
     
     # Session metadata
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
