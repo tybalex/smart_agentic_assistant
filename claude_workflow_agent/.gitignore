@@ -7,3 +7,6 @@ __pycache__
 
 # MCP OAuth tokens (persistent across runs)
 .mcp_tokens/
+
+# Executor sessions (saved execution history)
+.sessions/

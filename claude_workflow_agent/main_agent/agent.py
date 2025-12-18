@@ -317,7 +317,6 @@ class MainAgent:
         # MCP Tools discovered - Show actual list of available tools
         if self.session.available_tools:
             tools_list = self.session.available_tools.get('tools', [])
-            lines.append("✅ MCP tools already listed - DON'T call list_mcp_tools() again!")
             lines.append(f"   Total: {len(tools_list)} tools from {len(self.session.available_tools.get('servers', []))} servers\n")
             
             # Group tools by server for easy reference

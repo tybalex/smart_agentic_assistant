@@ -164,16 +164,18 @@ class ExecutorAgent:
         workflow_path: str,
         tools_config: ToolConfig,
         workflow_content: Optional[str] = None,
-        input_data: Optional[str] = None
+        input_data: Optional[str] = None,
+        previous_trace: Optional[Dict] = None
     ) -> ExecutionTrace:
         """
-        Execute a workflow with scoped tools.
+        Execute a workflow with scoped tools, optionally resuming from previous state.
         
         Args:
             workflow_path: Path to workflow.md file
             tools_config: Tool configuration from tools.json
             workflow_content: Optional pre-loaded workflow content (the workflow.md instructions)
             input_data: Optional input data/variables for the workflow (values to use)
+            previous_trace: Optional previous execution trace to resume from
         
         Returns:
             ExecutionTrace with complete execution log
@@ -185,32 +187,101 @@ class ExecutorAgent:
             with open(workflow_path, 'r') as f:
                 workflow_content = f.read()
         
-        # Initialize trace
-        session_id = f"exec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        self.current_trace = ExecutionTrace(
-            workflow_path=workflow_path,
-            session_id=session_id,
-            start_time=datetime.now().isoformat(),
-            status=SessionStatus.ACTIVE,
-        )
-        
-        # Store input data for use in prompts
-        self.input_data = input_data
+        # Initialize or restore trace and conversation history
+        if previous_trace:
+            # Resume from previous execution
+            session_id = previous_trace.get("session_id", f"exec_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            
+            # Restore message history
+            self.message_history = previous_trace.get("message_history", [])
+            
+            # Restore trace with previous steps
+            self.current_trace = ExecutionTrace(
+                workflow_path=workflow_path,
+                session_id=session_id,
+                start_time=previous_trace.get("start_time", datetime.now().isoformat()),
+                status=SessionStatus.ACTIVE,
+            )
+            
+            # Deserialize and restore previous steps
+            for step_data in previous_trace.get("steps", []):
+                step = StepExecution(
+                    step_number=step_data["step_number"],
+                    description=step_data.get("description", ""),
+                    status=ActionStatus(step_data["status"]),
+                    timestamp=step_data.get("timestamp", datetime.now().isoformat()),
+                    reasoning=step_data.get("reasoning"),
+                    tool_calls=step_data.get("tool_calls", []),
+                    result=step_data.get("result"),
+                    error=step_data.get("error")
+                )
+                self.current_trace.steps.append(step)
+            
+            # Restore clarification requests
+            for cr_data in previous_trace.get("clarification_requests", []):
+                cr = ClarificationRequest(
+                    question=cr_data["question"],
+                    context=cr_data.get("context", ""),
+                    step_number=cr_data.get("step_number", 0)
+                )
+                self.current_trace.clarification_requests.append(cr)
+            
+            # Restore metadata
+            self.input_data = previous_trace.get("input_data")
+            starting_step = len(self.current_trace.steps) + 1
+            
+            print(Colors.header(f"\n{'='*80}"))
+            print(Colors.header(f"🔄 EXECUTOR AGENT: RESUMING WORKFLOW EXECUTION"))
+            print(Colors.header(f"{'='*80}"))
+            print(Colors.executor(f"📁 Workflow: {workflow_path}"))
+            print(Colors.executor(f"🔧 Tools: {len(tools_config.tools)} available"))
+            print(Colors.executor(f"📂 Session: {session_id}"))
+            print(Colors.executor(f"📊 Previous steps: {len(self.current_trace.steps)} completed"))
+            print(Colors.executor(f"🎯 Resuming from step: {starting_step}"))
+            if self.message_history:
+                print(Colors.executor(f"💬 Conversation history: {len(self.message_history)} messages restored"))
+            print(Colors.header(f"{'='*80}\n"))
+            
+        else:
+            # Start fresh execution
+            session_id = f"exec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self.message_history = []  # Clear history for new execution
+            
+            self.current_trace = ExecutionTrace(
+                workflow_path=workflow_path,
+                session_id=session_id,
+                start_time=datetime.now().isoformat(),
+                status=SessionStatus.ACTIVE,
+            )
+            
+            # Store input data for use in prompts
+            self.input_data = input_data
+            starting_step = 1
+            
+            # Always show execution start for new execution
+            print(Colors.header(f"\n{'='*80}"))
+            print(Colors.header(f"🚀 EXECUTOR AGENT: STARTING WORKFLOW EXECUTION"))
+            print(Colors.header(f"{'='*80}"))
+            print(Colors.executor(f"📁 Workflow: {workflow_path}"))
+            print(Colors.executor(f"🔧 Tools: {len(tools_config.tools)} available"))
+            if input_data:
+                print(Colors.executor(f"📥 Input data provided: {len(input_data)} characters"))
+            print(Colors.header(f"{'='*80}\n"))
         
         # Main execution loop
-        step_number = 1
+        step_number = starting_step
         max_steps = 50  # Safety limit
         budget = TokenBudget(max_tokens=180000)
         
-        # Always show execution start
-        print(Colors.header(f"\n{'='*80}"))
-        print(Colors.header(f"🚀 EXECUTOR AGENT: STARTING WORKFLOW EXECUTION"))
-        print(Colors.header(f"{'='*80}"))
-        print(Colors.executor(f"📁 Workflow: {workflow_path}"))
-        print(Colors.executor(f"🔧 Tools: {len(tools_config.tools)} available"))
-        if input_data:
-            print(Colors.executor(f"📥 Input data provided: {len(input_data)} characters"))
-        print(Colors.header(f"{'='*80}\n"))
+        # If resuming, restore token budget (approximate based on message history)
+        if previous_trace and self.message_history:
+            # Estimate tokens used from previous messages
+            estimated_tokens = sum(
+                len(str(msg.get("content", ""))) // 4  # Rough estimate: 4 chars per token
+                for msg in self.message_history
+            )
+            budget.used_tokens = estimated_tokens
+            print(Colors.executor(f"📊 Token budget restored: ~{estimated_tokens} tokens used previously\n"))
         
         while step_number <= max_steps and not budget.exceeded:
             logger.info(f"Executing step {step_number}")
@@ -221,10 +292,13 @@ class ExecutorAgent:
             print(Colors.executor(f"{'─'*80}"))
             
             # Call LLM to decide next action (now with streaming and real-time output)
+            # Pass is_resuming=True only for the very first step after resume
+            is_first_resumed_step = (previous_trace is not None and step_number == starting_step)
             evaluation = self._evaluate_next_step(
                 workflow_content,
                 tools_config,  # Pass tools_config instead of formatted string
-                budget
+                budget,
+                is_resuming=is_first_resumed_step
             )
             
             # Check if goal achieved
@@ -385,15 +459,19 @@ class ExecutorAgent:
         self,
         workflow_content: str,
         tools_config: ToolConfig,
-        budget: TokenBudget
+        budget: TokenBudget,
+        is_resuming: bool = False
     ) -> Dict[str, Any]:
         """
         Ask LLM what to do next based on workflow and execution so far.
         Uses native Claude API with tool calling (streaming for visibility).
-        """
-        # Format execution history
-        history_str = self._format_execution_history()
         
+        Args:
+            workflow_content: The workflow markdown content
+            tools_config: Tool configuration
+            budget: Token budget tracker
+            is_resuming: Whether we're resuming from a previous session
+        """
         # Convert tools to Anthropic format
         anthropic_tools = self._convert_tools_to_anthropic_format(tools_config)
         
@@ -439,7 +517,26 @@ class ExecutorAgent:
         
         system_prompt = "\n".join(system_prompt_parts)
 
-        user_message = f"""EXECUTION HISTORY SO FAR:
+        # Build messages based on whether we're resuming or starting fresh
+        if is_resuming and self.message_history:
+            # Resuming: Use the full conversation history + a continuation message
+            history_str = self._format_execution_history()
+            continuation_msg = f"""Continue workflow execution.
+
+EXECUTION HISTORY SO FAR:
+{history_str}
+
+---
+
+Based on the conversation history and execution so far, what should we do next?
+
+Explain your reasoning, then call the appropriate tool."""
+            
+            messages = self.message_history + [{"role": "user", "content": continuation_msg}]
+        else:
+            # Fresh start: Build initial user message
+            history_str = self._format_execution_history()
+            user_message = f"""EXECUTION HISTORY SO FAR:
 {history_str}
 
 ---
@@ -447,6 +544,8 @@ class ExecutorAgent:
 Based on the workflow above and execution so far, what should we do next?
 
 Explain your reasoning, then call the appropriate tool."""
+            
+            messages = [{"role": "user", "content": user_message}]
 
         # Use streaming API with tools
         print(Colors.executor("\n💭 Executor reasoning..."))
@@ -460,7 +559,7 @@ Explain your reasoning, then call the appropriate tool."""
                 max_tokens=8000,
                 temperature=0.1,
                 system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
+                messages=messages,
                 tools=anthropic_tools
             ) as stream:
                 for event in stream:
@@ -478,17 +577,43 @@ Explain your reasoning, then call the appropriate tool."""
                                 # Tool input being streamed
                                 pass
                 
-                # Get final message
-                final_message = stream.get_final_message()
-                
-                # Extract tool uses
-                for block in final_message.content:
-                    if block.type == "tool_use":
-                        tool_uses.append(block)
-                
-                # Track tokens
-                if hasattr(final_message, 'usage'):
-                    budget.add_tokens(final_message.usage.input_tokens + final_message.usage.output_tokens)
+            # Get final message
+            final_message = stream.get_final_message()
+            
+            # Save user message to history (the last message in our messages list)
+            if not is_resuming:
+                # Fresh execution - save the user message we just created
+                self.message_history.append(messages[0])
+            else:
+                # Resuming - save the continuation message
+                self.message_history.append(messages[-1])
+            
+            # Save assistant response to history
+            assistant_content = []
+            for block in final_message.content:
+                if hasattr(block, 'text'):
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif hasattr(block, 'type') and block.type == 'tool_use':
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input
+                    })
+            
+            self.message_history.append({
+                "role": "assistant",
+                "content": assistant_content
+            })
+            
+            # Extract tool uses
+            for block in final_message.content:
+                if block.type == "tool_use":
+                    tool_uses.append(block)
+            
+            # Track tokens
+            if hasattr(final_message, 'usage'):
+                budget.add_tokens(final_message.usage.input_tokens + final_message.usage.output_tokens)
         
         except Exception as e:
             logger.error(f"Error in evaluate_next_step: {e}")

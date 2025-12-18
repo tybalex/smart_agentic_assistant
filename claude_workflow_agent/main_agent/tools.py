@@ -21,11 +21,57 @@ _registry_cache = None
 _discovered_tools_cache = None
 
 
-async def list_mcp_tools() -> Dict[str, Any]:
+async def list_mcp_servers() -> Dict[str, Any]:
     """
-    List all MCP tools available to the Main Agent from configured MCP servers.
+    List all configured MCP servers.
     
-    IMPORTANT: This shows ALL tools the Main Agent has access to across all servers.
+    Returns:
+        Dict with: {
+            "success": bool,
+            "servers": List[str],
+            "total": int
+        }
+    """
+    global _registry_cache, _discovered_tools_cache
+    
+    try:
+        # Check cache first
+        if _discovered_tools_cache:
+            return {
+                "success": True,
+                "servers": _discovered_tools_cache["servers"],
+                "total": len(_discovered_tools_cache["servers"])
+            }
+        
+        # Need to discover - create registry if needed
+        if not _registry_cache:
+            _registry_cache = await create_registry_from_config()
+        
+        # Discover to get server list
+        tools_by_server = await _registry_cache.discover_all_tools()
+        servers = list(tools_by_server.keys())
+        
+        return {
+            "success": True,
+            "servers": servers,
+            "total": len(servers)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def list_mcp_tools(server: str = None) -> Dict[str, Any]:
+    """
+    List MCP tools available to the Main Agent from configured MCP servers.
+    
+    Args:
+        server: Optional server name to filter tools. If None/empty, returns all tools.
+    
+    IMPORTANT: This shows tools the Main Agent has access to from MCP servers.
     To see which tools a specific WORKFLOW is configured to use, read that workflow's 
     tools.json file instead (it's in the same directory as workflow.md).
     
@@ -43,40 +89,57 @@ async def list_mcp_tools() -> Dict[str, Any]:
     
     try:
         # Use in-memory cache if available (within same session)
-        if _discovered_tools_cache:
-            return _discovered_tools_cache
+        if not _discovered_tools_cache:
+            # Need to discover - create registry if needed
+            print("🔍 Listing MCP tools from all configured servers...")
+            if not _registry_cache:
+                _registry_cache = await create_registry_from_config()
+            
+            # Discover all tools
+            tools_by_server = await _registry_cache.discover_all_tools()
         
-        # Need to discover - create registry if needed
-        print("🔍 Listing MCP tools from all configured servers...")
-        if not _registry_cache:
-            _registry_cache = await create_registry_from_config()
+            # Flatten to simple list with ALL fields including schemas
+            all_tools = []
+            for srv, tools in tools_by_server.items():
+                for tool in tools:
+                    all_tools.append({
+                        "server": srv,
+                        "tool": tool["tool"],
+                        "description": tool["description"],
+                        "input_schema": tool.get("input_schema"),
+                        "output_schema": tool.get("output_schema")
+                    })
+            
+            result = {
+                "success": True,
+                "servers": list(tools_by_server.keys()),
+                "tools": all_tools,
+                "total": len(all_tools)
+            }
+            
+            # Cache for session (in-memory only)
+            _discovered_tools_cache = result
         
-        # Discover all tools
-        tools_by_server = await _registry_cache.discover_all_tools()
+        # Filter by server if specified
+        if server:
+            cached_tools = _discovered_tools_cache["tools"]
+            filtered_tools = [t for t in cached_tools if t["server"] == server]
+            
+            if not filtered_tools:
+                return {
+                    "success": False,
+                    "error": f"Server '{server}' not found or has no tools. Available servers: {', '.join(_discovered_tools_cache['servers'])}"
+                }
+            
+            return {
+                "success": True,
+                "servers": [server],
+                "tools": filtered_tools,
+                "total": len(filtered_tools)
+            }
         
-        # Flatten to simple list with ALL fields including schemas
-        all_tools = []
-        for server, tools in tools_by_server.items():
-            for tool in tools:
-                all_tools.append({
-                    "server": server,
-                    "tool": tool["tool"],
-                    "description": tool["description"],
-                    "input_schema": tool.get("input_schema"),
-                    "output_schema": tool.get("output_schema")
-                })
-        
-        result = {
-            "success": True,
-            "servers": list(tools_by_server.keys()),
-            "tools": all_tools,
-            "total": len(all_tools)
-        }
-        
-        # Cache for session (in-memory only)
-        _discovered_tools_cache = result
-        
-        return result
+        # Return all tools
+        return _discovered_tools_cache
         
     except Exception as e:
         return {
@@ -366,13 +429,114 @@ def select_mcp_tools(workflow_path: str, tool_list: List[Dict[str, str]]) -> Dic
         }
 
 
-async def execute_workflow(workflow_path: str, input_data: str = None) -> Dict[str, Any]:
+async def list_executor_sessions(workflow_path: str) -> Dict[str, Any]:
     """
-    Execute workflow with Executor Agent.
+    List saved executor sessions for a workflow.
+    
+    Args:
+        workflow_path: Path to workflow.md file
+    
+    Returns:
+        Dict with session list and metadata
+    """
+    try:
+        workflow_file = Path(workflow_path)
+        if not workflow_file.exists():
+            return {
+                "success": False,
+                "error": f"Workflow not found: {workflow_path}"
+            }
+        
+        # Sessions stored in .sessions/ subdirectory
+        sessions_dir = workflow_file.parent / ".sessions"
+        
+        if not sessions_dir.exists():
+            return {
+                "success": True,
+                "sessions": [],
+                "total": 0,
+                "message": "No sessions saved yet"
+            }
+        
+        # List all session files
+        session_files = sorted(sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        
+        sessions = []
+        for session_file in session_files:
+            try:
+                with open(session_file, 'r') as f:
+                    session_data = json.load(f)
+                    sessions.append({
+                        "session_id": session_data.get("session_id"),
+                        "status": session_data.get("status"),
+                        "timestamp": session_data.get("timestamp"),
+                        "total_steps": len(session_data.get("steps", [])),
+                        "completed_steps": sum(1 for s in session_data.get("steps", []) if s.get("status") == "completed"),
+                        "needs_clarification": bool(session_data.get("clarification_requests"))
+                    })
+            except Exception as e:
+                print(f"⚠️  Error reading session {session_file.name}: {e}")
+                continue
+        
+        return {
+            "success": True,
+            "sessions": sessions,
+            "total": len(sessions),
+            "sessions_dir": str(sessions_dir)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def load_executor_session(workflow_path: str, session_id: str) -> Dict[str, Any]:
+    """
+    Load a saved executor session.
+    
+    Args:
+        workflow_path: Path to workflow.md file
+        session_id: Session ID to load
+    
+    Returns:
+        Dict with full session data
+    """
+    try:
+        workflow_file = Path(workflow_path)
+        sessions_dir = workflow_file.parent / ".sessions"
+        session_file = sessions_dir / f"{session_id}.json"
+        
+        if not session_file.exists():
+            return {
+                "success": False,
+                "error": f"Session '{session_id}' not found. Use list_executor_sessions() to see available sessions."
+            }
+        
+        with open(session_file, 'r') as f:
+            session_data = json.load(f)
+        
+        return {
+            "success": True,
+            **session_data
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def execute_workflow(workflow_path: str, input_data: str = None, resume_session_id: str = None) -> Dict[str, Any]:
+    """
+    Execute workflow with Executor Agent from scratch or resume a previous session.
     
     Args:
         workflow_path: Path to workflow.md file
         input_data: Optional input data/variables for the workflow (e.g., company details, IDs, etc.)
+        resume_session_id: Optional session ID to resume. If provided, continues from previous state.
     
     Returns:
         Dict with execution trace data
@@ -419,13 +583,29 @@ async def execute_workflow(workflow_path: str, input_data: str = None) -> Dict[s
             allowed_tools=tools_config.tools
         )
         
+        # Load previous session if resuming
+        previous_trace = None
+        if resume_session_id:
+            sessions_dir = workflow_file.parent / ".sessions"
+            session_file = sessions_dir / f"{resume_session_id}.json"
+            
+            if session_file.exists():
+                print(f"📂 Loading previous session: {resume_session_id}")
+                with open(session_file, 'r') as f:
+                    session_data = json.load(f)
+                # Convert to ExecutionTrace object (simplified - would need proper deserialization)
+                previous_trace = session_data
+            else:
+                print(f"⚠️  Session '{resume_session_id}' not found, starting from scratch")
+        
         # Create and run executor (output is now always visible)
         executor = ExecutorAgent(tool_executor=mcp_executor, verbose=False)
         trace = await executor.execute_workflow(
             workflow_path=str(workflow_file),
             tools_config=tools_config,
             workflow_content=workflow_content,
-            input_data=input_data
+            input_data=input_data,
+            previous_trace=previous_trace if resume_session_id else None
         )
         
         # Check if execution was successful
@@ -475,6 +655,91 @@ async def execute_workflow(workflow_path: str, input_data: str = None) -> Dict[s
                 }
                 for s in trace.steps
             ]
+        
+        # Save session to workflow directory with full state for resume
+        sessions_dir = workflow_file.parent / ".sessions"
+        sessions_dir.mkdir(exist_ok=True)
+        
+        session_file = sessions_dir / f"{trace.session_id}.json"
+        
+        # Serialize steps with all details for proper restoration
+        serialized_steps = []
+        for step in trace.steps:
+            serialized_steps.append({
+                "step_number": step.step_number,
+                "description": step.description,
+                "status": step.status.value,
+                "reasoning": step.reasoning if hasattr(step, 'reasoning') else None,
+                "tool_calls": step.tool_calls if hasattr(step, 'tool_calls') else [],
+                "result": step.result if hasattr(step, 'result') else None,
+                "error": step.error,
+                "timestamp": step.timestamp
+            })
+        
+        # Serialize clarification requests
+        serialized_clarifications = []
+        for cr in trace.clarification_requests:
+            serialized_clarifications.append({
+                "question": cr.question,
+                "context": cr.context,
+                "step_number": cr.step_number
+            })
+        
+        # Get message history from executor
+        message_history = []
+        if hasattr(executor, 'message_history'):
+            # Serialize message history - handle both simple and complex content
+            for msg in executor.message_history:
+                serialized_msg = {"role": msg["role"]}
+                content = msg["content"]
+                
+                # Handle different content types
+                if isinstance(content, str):
+                    serialized_msg["content"] = content
+                elif isinstance(content, list):
+                    # Content blocks (text + tool_use)
+                    serialized_content = []
+                    for block in content:
+                        if isinstance(block, dict):
+                            serialized_content.append(block)
+                        elif hasattr(block, 'text'):
+                            serialized_content.append({"type": "text", "text": block.text})
+                        elif hasattr(block, 'type') and block.type == 'tool_use':
+                            serialized_content.append({
+                                "type": "tool_use",
+                                "id": block.id,
+                                "name": block.name,
+                                "input": block.input
+                            })
+                    serialized_msg["content"] = serialized_content
+                else:
+                    serialized_msg["content"] = str(content)
+                
+                message_history.append(serialized_msg)
+        
+        session_data = {
+            "session_id": trace.session_id,
+            "status": trace.status.value,
+            "timestamp": trace.timestamp,
+            "start_time": trace.start_time if hasattr(trace, 'start_time') else trace.timestamp,
+            "end_time": trace.end_time if hasattr(trace, 'end_time') else None,
+            "workflow_path": str(workflow_file),
+            "input_data": input_data,
+            "steps": serialized_steps,
+            "clarification_requests": serialized_clarifications,
+            "final_summary": trace.final_summary if hasattr(trace, 'final_summary') else result.get("final_summary"),
+            "completed_steps": result["completed_steps"],
+            "failed_steps": result["failed_steps"],
+            "total_steps": result["total_steps"],
+            "message_history": message_history  # Full conversation history for resume
+        }
+        
+        with open(session_file, 'w') as f:
+            json.dump(session_data, f, indent=2)
+        
+        print(f"💾 Session saved: {session_file}")
+        print(f"   📊 Saved {len(serialized_steps)} steps, {len(message_history)} messages")
+        result["session_file"] = str(session_file)
         
         return result
         
@@ -538,23 +803,40 @@ def list_workflows(directory: str = None) -> Dict[str, Any]:
 
 # Tool registry for Main Agent (function mapping)
 AVAILABLE_TOOLS = {
+    "list_mcp_servers": list_mcp_servers,
     "list_mcp_tools": list_mcp_tools,
     "run_mcp_tool": run_mcp_tool,
     "read_workflow": read_workflow,
     "write_workflow": write_workflow,
     "select_mcp_tools": select_mcp_tools,
     "execute_workflow": execute_workflow,
+    "list_executor_sessions": list_executor_sessions,
+    "load_executor_session": load_executor_session,
     "list_workflows": list_workflows
 }
 
 # Anthropic-format tool definitions for API
 ANTHROPIC_TOOLS = [
     {
-        "name": "list_mcp_tools",
-        "description": "List ALL MCP tools available to Main Agent from configured servers. IMPORTANT: This shows the full catalog of tools Main Agent can access, NOT the tools a specific workflow uses. To see which tools a workflow is configured to use, read the workflow's tools.json file instead (same directory as workflow.md). Only call this when you need to see what tools exist across all MCP servers (e.g., when creating new workflows or selecting tools).",
+        "name": "list_mcp_servers",
+        "description": "List all configured MCP servers. Returns a list of server names that Main Agent can access. Use this before list_mcp_tools() to see what servers are available.",
         "input_schema": {
             "type": "object",
             "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "list_mcp_tools",
+        "description": "List MCP tools available to Main Agent from configured servers. Can optionally filter by server. IMPORTANT: This shows the catalog of tools Main Agent can access, NOT the tools a specific workflow uses. To see which tools a workflow is configured to use, read the workflow's tools.json file instead (same directory as workflow.md).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "Optional: Server name to filter tools (e.g., 'slack', 'salesforce'). If not provided, returns tools from all servers. Use list_mcp_servers() to see available servers."
+                }
+            },
             "required": []
         }
     },
@@ -640,7 +922,7 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "execute_workflow",
-        "description": "Execute workflow with Executor Agent and return detailed execution results including status, step counts, and any errors. Input data is optional, but if it is not provided, you should warn the user before executing the workflow.",
+        "description": "Execute workflow with Executor Agent from scratch or resume a previous session. Returns detailed execution results. Sessions are automatically saved to the workflow's .sessions/ directory for potential resume. Input data is optional, but if not provided, you should warn the user before executing the workflow.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -651,9 +933,45 @@ ANTHROPIC_TOOLS = [
                 "input_data": {
                     "type": "string",
                     "description": "Optional input data for the workflow. Can be structured data (JSON, key-value pairs) or free-form text with context/variables the workflow needs (e.g., company details, IDs, configuration). If the user provided input files with @, include that content here."
+                },
+                "resume_session_id": {
+                    "type": "string",
+                    "description": "Optional: Session ID to resume from a previous execution. Use list_executor_sessions() to see available sessions. If provided, continues from where that session left off."
                 }
             },
             "required": ["workflow_path"]
+        }
+    },
+    {
+        "name": "list_executor_sessions",
+        "description": "List saved executor sessions for a workflow. Shows session history including status, step counts, and whether clarification is needed. Use this to see what sessions can be resumed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workflow_path": {
+                    "type": "string",
+                    "description": "Path to workflow.md file"
+                }
+            },
+            "required": ["workflow_path"]
+        }
+    },
+    {
+        "name": "load_executor_session",
+        "description": "Load full details of a saved executor session. Use this to inspect what happened in a previous execution, including all steps, results, errors, and clarification requests.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workflow_path": {
+                    "type": "string",
+                    "description": "Path to workflow.md file"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to load (from list_executor_sessions)"
+                }
+            },
+            "required": ["workflow_path", "session_id"]
         }
     },
     {

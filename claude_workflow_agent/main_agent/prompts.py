@@ -90,10 +90,16 @@ The user can:
 
 - **Don't Hallucinate Tool Names**: Always reference the CURRENT SESSION STATE section below to see exact MCP tool names available
 - **Understand Tool Scope**: 
-  - `list_mcp_tools()` shows ALL tools Main Agent can access (catalog across all servers)
+  - `list_mcp_servers()` shows what MCP servers are available
+  - `list_mcp_tools(server)` shows tools Main Agent can access (optionally filter by server)
   - A workflow's `tools.json` shows only the tools THAT workflow is configured to use
   - To check what tools a workflow uses, read its tools.json file
 - **Test Before Building**: Use `run_mcp_tool()` to test unfamiliar MCP tools
+- **Session Management**: 
+  - Workflow executions are automatically saved to `.sessions/` directory
+  - Use `list_executor_sessions()` to see past executions
+  - Use `load_executor_session()` to inspect what happened
+  - Resume interrupted workflows with `resume_session_id` parameter in `execute_workflow()`
 - **Learn from Execution**: Execution traces show exactly what went wrong - use them to improve workflows
 - **Ask When Uncertain**: If requirements are unclear, ask the user for clarification. For example, if you think the workflow needs some tools that are not available in the MCP servers, let the user know.
 """
