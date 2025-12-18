@@ -18,8 +18,10 @@ from constants import MAX_ITERATIONS
 class Message:
     """A message in the conversation"""
     role: str  # "user" or "assistant"
-    content: str
+    content: Any  # Can be string (simple text) or list of content blocks (with tool_use/tool_result)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Note: tool_calls and tool_results are now embedded in content blocks for proper API format
+    # These fields are kept for backward compatibility but deprecated
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     tool_results: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -63,8 +65,13 @@ class WorkflowSession:
     iteration_count: int = 0
     max_iterations: int = MAX_ITERATIONS
     
-    def add_user_message(self, content: str):
-        """Add user message to conversation"""
+    def add_user_message(self, content: Any):
+        """
+        Add user message to conversation.
+        
+        Args:
+            content: Either string (simple text) or list of content blocks (with tool_result blocks)
+        """
         self.messages.append(Message(
             role="user",
             content=content
@@ -72,11 +79,18 @@ class WorkflowSession:
     
     def add_assistant_message(
         self,
-        content: str,
+        content: Any,
         tool_calls: List[Dict[str, Any]] = None,
         tool_results: List[Dict[str, Any]] = None
     ):
-        """Add assistant message to conversation"""
+        """
+        Add assistant message to conversation.
+        
+        Args:
+            content: Either string (simple text) or list of content blocks (with tool_use blocks)
+            tool_calls: DEPRECATED - kept for backward compatibility
+            tool_results: DEPRECATED - kept for backward compatibility
+        """
         self.messages.append(Message(
             role="assistant",
             content=content,
@@ -115,18 +129,20 @@ class WorkflowSession:
         """Check if we can do more iterations"""
         return self.iteration_count < self.max_iterations
     
-    def get_conversation_context(self) -> List[Dict[str, str]]:
+    def get_conversation_context(self) -> List[Dict[str, Any]]:
         """
         Get conversation history in Claude API format.
         
         Returns:
-            List of {role, content} dicts
+            List of {role, content} dicts where content can be:
+            - string (simple text message)
+            - list of content blocks (with tool_use/tool_result blocks)
         """
         context = []
         for msg in self.messages:
             context.append({
                 "role": msg.role,
-                "content": msg.content
+                "content": msg.content  # Already in proper format (string or list of blocks)
             })
         return context
     

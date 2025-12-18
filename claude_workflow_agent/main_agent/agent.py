@@ -152,6 +152,11 @@ class MainAgent:
                     "content": assistant_content
                 })
                 
+                # CRITICAL: Save assistant message with tool_use blocks to session
+                self.session.add_assistant_message(
+                    content=assistant_content  # Contains tool_use blocks
+                )
+                
                 # Execute auto tools and collect results
                 tool_results_content = []
                 executed_tools = []
@@ -192,6 +197,11 @@ class MainAgent:
                     "role": "user",
                     "content": tool_results_content
                 })
+                
+                # CRITICAL: Save user message with tool_result blocks to session
+                self.session.add_user_message(
+                    content=tool_results_content  # Contains tool_result blocks
+                )
                 
                 # If there are tools needing approval, store state and return them
                 if needs_approval:
@@ -264,12 +274,8 @@ class MainAgent:
                                 "id": tool_use.id
                             })
                         
-                        # Save previous auto-executed tools to session
-                        self.session.add_assistant_message(
-                            content=text_content,
-                            tool_calls=executed_tools,
-                            tool_results=executed_results
-                        )
+                        # Note: Auto-executed tools were already saved to session above (lines 156 & 202)
+                        # The new assistant message with approval-required tools will be saved when user approves
                         
                         return {
                             "type": "tool_calls",
@@ -287,11 +293,10 @@ class MainAgent:
                         response_text = block.text
                         break
                 
-                # Save to session
+                # Save final assistant text response to session
+                # Note: Auto-executed tool_use and tool_result blocks were already saved above
                 self.session.add_assistant_message(
-                    content=response_text,
-                    tool_calls=executed_tools,
-                    tool_results=executed_results
+                    content=response_text
                 )
                 
                 return {
@@ -360,11 +365,16 @@ class MainAgent:
         # Build conversation context
         messages = self.session.get_conversation_context()
         
-        # Add the assistant message with tool uses
+        # Add the assistant message with tool uses to both API messages and session
         messages.append({
             "role": "assistant",
             "content": self.session.pending_assistant_content
         })
+        
+        # CRITICAL: Save assistant message with tool_use blocks to session
+        self.session.add_assistant_message(
+            content=self.session.pending_assistant_content  # Contains tool_use blocks
+        )
         
         # Execute approved tools and format results
         tool_results_content = []
@@ -424,6 +434,11 @@ class MainAgent:
             "role": "user",
             "content": tool_results_content
         })
+        
+        # CRITICAL: Save user message with tool_result blocks to session
+        self.session.add_user_message(
+            content=tool_results_content  # Contains tool_result blocks
+        )
         
         # Clear pending state
         self.session.pending_assistant_content = None
@@ -610,12 +625,8 @@ class MainAgent:
                             "id": tool_use.id
                         })
                     
-                    # Save previously executed tools to session first
-                    self.session.add_assistant_message(
-                        content=text_content,
-                        tool_calls=executed_tools,
-                        tool_results=executed_results
-                    )
+                    # Note: Tool_use and tool_result blocks were already saved above (lines 369 & 432)
+                    # The new assistant message with approval-required tools will be saved when user approves
                     
                     return {
                         "type": "tool_calls",
@@ -630,11 +641,10 @@ class MainAgent:
                     response_text = block.text
                     break
             
-            # Save to session
+            # Save final assistant text response to session
+            # Note: Tool_use and tool_result blocks were already saved above
             self.session.add_assistant_message(
-                content=response_text,
-                tool_calls=executed_tools,
-                tool_results=executed_results
+                content=response_text
             )
             
             return {
@@ -650,11 +660,10 @@ class MainAgent:
                     response_text = block.text
                     break
             
-            # Save to session
+            # Save final assistant text response to session
+            # Note: Tool_use and tool_result blocks were already saved above
             self.session.add_assistant_message(
-                content=response_text,
-                tool_calls=executed_tools,
-                tool_results=executed_results
+                content=response_text
             )
             
             return {
