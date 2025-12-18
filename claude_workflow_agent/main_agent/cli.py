@@ -61,7 +61,7 @@ class WorkflowCLI:
             print()
         print("📝 Tips:")
         print("  - Tell me what workflow you want to create")
-        print("  - Use @ to reference files: 'read from @input/workflow.txt'")
+        print("  - Use @ to reference files: 'read from @input/data.txt'")
         print("  - I'll write it, test it, and improve it based on execution results")
         print("  - Type 'quit' or 'exit' to leave")
         print("  - Type 'status' to see current session info")
@@ -75,8 +75,8 @@ class WorkflowCLI:
         self.agent.start_session("workflow")
         
         print("💬 Tell me what workflow you want to create, or try:")
-        print("   • 'Create a workflow to onboard new employees'")
-        print("   • 'Read from @input/CNCF_workflow.txt and create that'")
+        print("   • 'Create a workflow to cover the insurance validation process'")
+        print("   • 'Read from @input/myworkflow.txt and create that'")
         print("   • 'help' for more examples")
         print()
         

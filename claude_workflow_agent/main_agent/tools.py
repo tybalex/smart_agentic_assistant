@@ -494,16 +494,20 @@ async def list_executor_sessions(workflow_path: str) -> Dict[str, Any]:
         }
 
 
-async def load_executor_session(workflow_path: str, session_id: str) -> Dict[str, Any]:
+async def inspect_executor_session(workflow_path: str, session_id: str) -> Dict[str, Any]:
     """
-    Load a saved executor session.
+    Inspect a saved executor session and return a SUMMARY for debugging.
+    
+    Returns session status, step summaries (with errors), and clarifications.
+    Does NOT return full conversation history (too large).
     
     Args:
         workflow_path: Path to workflow.md file
-        session_id: Session ID to load
+        session_id: Session ID to inspect
     
     Returns:
-        Dict with full session data
+        Dict with session summary (status, steps, errors, clarifications)
+        Does NOT include full conversation history (too large for tool result)
     """
     try:
         workflow_file = Path(workflow_path)
@@ -519,9 +523,45 @@ async def load_executor_session(workflow_path: str, session_id: str) -> Dict[str
         with open(session_file, 'r') as f:
             session_data = json.load(f)
         
+        # Return only the useful summary data, NOT the full conversation history
+        steps_summary = []
+        for step in session_data.get("steps", []):
+            step_info = {
+                "step_number": step["step_number"],
+                "description": step["description"],
+                "status": step["status"],
+                "reasoning": step.get("reasoning", "")[:200] if step.get("reasoning") else None,  # Truncate long reasoning
+            }
+            
+            # Include errors (never truncate)
+            if step.get("error"):
+                step_info["error"] = step["error"]
+            
+            # Include result summary (truncate large results)
+            if step.get("result"):
+                result_str = json.dumps(step["result"])
+                if len(result_str) > 500:
+                    step_info["result_summary"] = result_str[:500] + "... [truncated]"
+                else:
+                    step_info["result"] = step["result"]
+            
+            steps_summary.append(step_info)
+        
         return {
             "success": True,
-            **session_data
+            "session_id": session_data.get("session_id"),
+            "status": session_data.get("status"),
+            "start_time": session_data.get("start_time"),
+            "end_time": session_data.get("end_time"),
+            "workflow_path": session_data.get("workflow_path"),
+            "total_steps": session_data.get("total_steps", len(steps_summary)),
+            "completed_steps": session_data.get("completed_steps", 0),
+            "failed_steps": session_data.get("failed_steps", 0),
+            "steps": steps_summary,  # Summary only, not full details
+            "clarification_requests": session_data.get("clarification_requests", []),
+            "final_summary": session_data.get("final_summary"),
+            # NOTE: message_history is intentionally excluded (too large - can be 40k+ tokens)
+            # If you need to resume, use execute_workflow(resume_session_id=...) instead
         }
         
     except Exception as e:
@@ -813,7 +853,7 @@ AVAILABLE_TOOLS = {
     "select_mcp_tools": select_mcp_tools,
     "execute_workflow": execute_workflow,
     "list_executor_sessions": list_executor_sessions,
-    "load_executor_session": load_executor_session,
+    "inspect_executor_session": inspect_executor_session,
     "list_workflows": list_workflows
 }
 
@@ -959,8 +999,8 @@ ANTHROPIC_TOOLS = [
         }
     },
     {
-        "name": "load_executor_session",
-        "description": "Load full details of a saved executor session. Use this to inspect what happened in a previous execution, including all steps, results, errors, and clarification requests.",
+        "name": "inspect_executor_session",
+        "description": "Inspect a saved executor session for debugging. Returns a SUMMARY with session status, step summaries (with full errors), and clarification requests. Does NOT return full conversation history (too large for tool result). Use this to analyze what happened in a past execution. If you want to RESUME a session, use execute_workflow(resume_session_id=...) instead.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -970,7 +1010,7 @@ ANTHROPIC_TOOLS = [
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Session ID to load (from list_executor_sessions)"
+                    "description": "Session ID to inspect (from list_executor_sessions)"
                 }
             },
             "required": ["workflow_path", "session_id"]

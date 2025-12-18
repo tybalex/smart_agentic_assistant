@@ -196,33 +196,56 @@ class ExecutorAgent:
             raw_history = previous_trace.get("message_history", [])
             
             # IMPORTANT: Validate and clean message history
-            # Remove any trailing assistant messages with tool_use blocks that don't have corresponding tool_results
+            # Remove any assistant messages with tool_use blocks that don't have ALL corresponding tool_results
             # This can happen if the session was saved right after a tool call but before adding the result
             cleaned_history = []
+            skip_next_user = False
+            
             for i, msg in enumerate(raw_history):
+                # Skip user messages that were marked for removal
+                if skip_next_user and msg.get("role") == "user":
+                    skip_next_user = False
+                    logger.warning(f"Removing orphaned user message at index {i}")
+                    continue
+                
                 if msg.get("role") == "assistant":
                     # Check if this assistant message has tool_use blocks
                     content = msg.get("content", [])
-                    has_tool_use = any(
-                        block.get("type") == "tool_use" 
-                        for block in (content if isinstance(content, list) else [])
-                    )
+                    if not isinstance(content, list):
+                        # Old format or plain text - safe to keep
+                        cleaned_history.append(msg)
+                        continue
                     
-                    if has_tool_use:
-                        # Check if the next message is a user message with tool_result
+                    # Extract all tool_use IDs from this assistant message
+                    tool_use_ids = set()
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tool_use_ids.add(block.get("id"))
+                    
+                    if tool_use_ids:
+                        # This assistant message has tool calls - verify ALL have results
                         if i + 1 < len(raw_history):
                             next_msg = raw_history[i + 1]
                             if next_msg.get("role") == "user":
                                 next_content = next_msg.get("content", [])
-                                has_tool_result = any(
-                                    block.get("type") == "tool_result"
-                                    for block in (next_content if isinstance(next_content, list) else [])
-                                )
-                                if has_tool_result:
-                                    cleaned_history.append(msg)
-                                    continue
-                        # No tool_result found - skip this assistant message to fix the conversation
-                        logger.warning(f"Removing incomplete assistant message at index {i} (has tool_use but no tool_result)")
+                                if isinstance(next_content, list):
+                                    # Extract all tool_result IDs
+                                    tool_result_ids = set()
+                                    for block in next_content:
+                                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                                            tool_result_ids.add(block.get("tool_use_id"))
+                                    
+                                    # Check if ALL tool_use IDs have corresponding results
+                                    if tool_use_ids.issubset(tool_result_ids):
+                                        # All tool calls have results - keep both messages
+                                        cleaned_history.append(msg)
+                                        continue
+                        
+                        # Missing tool results - remove this assistant message
+                        # and mark the next user message for removal if it exists
+                        logger.warning(f"Removing incomplete assistant message at index {i} "
+                                     f"(has {len(tool_use_ids)} tool_use blocks without complete tool_results)")
+                        skip_next_user = True
                         continue
                     
                 cleaned_history.append(msg)
@@ -230,7 +253,10 @@ class ExecutorAgent:
             self.message_history = cleaned_history
             
             if len(cleaned_history) < len(raw_history):
-                logger.info(f"Cleaned message history: {len(raw_history)} -> {len(cleaned_history)} messages")
+                removed_count = len(raw_history) - len(cleaned_history)
+                logger.warning(f"Cleaned message history: {len(raw_history)} -> {len(cleaned_history)} messages "
+                             f"({removed_count} messages removed due to incomplete tool calls)")
+                print(Colors.warning(f"⚠️  Cleaned up {removed_count} incomplete messages from saved session"))
             
             # Restore trace with previous steps
             self.current_trace = ExecutionTrace(
@@ -568,7 +594,13 @@ class ExecutorAgent:
             "- ALWAYS explain your reasoning before calling a tool",
             "- Use actual values from INPUT DATA section when workflow mentions variables",
             "- Validate results according to the Validation section in workflow",
-            "- If stuck or need user input, call request_clarification"
+            "- If stuck or need user input, call request_clarification",
+            "",
+            "ABOUT TOOL RESULTS:",
+            "- Your conversation history contains FULL tool_use and tool_result blocks with complete details",
+            "- The execution summary may show truncated results for brevity",
+            "- If you see '[truncated - see conversation history for full result]', check the actual tool_result block in the conversation",
+            "- Error messages are NEVER truncated - you always see the complete error details"
         ])
         
         system_prompt = "\n".join(system_prompt_parts)
@@ -579,8 +611,11 @@ class ExecutorAgent:
             history_str = self._format_execution_history()
             continuation_msg = f"""Continue workflow execution.
 
-EXECUTION HISTORY SO FAR:
+EXECUTION SUMMARY (overview of completed steps):
 {history_str}
+
+Note: This is a summary. Full tool results are in the conversation history above. 
+If you need complete details from any step, refer to the tool_result blocks in the conversation.
 
 ---
 
@@ -592,7 +627,7 @@ Explain your reasoning, then call the appropriate tool."""
         else:
             # Fresh start: Build initial user message
             history_str = self._format_execution_history()
-            user_message = f"""EXECUTION HISTORY SO FAR:
+            user_message = f"""EXECUTION SUMMARY:
 {history_str}
 
 ---
@@ -876,9 +911,17 @@ Explain your reasoning, then call the appropriate tool."""
             
             if step.result:
                 result_str = json.dumps(step.result)
-                if len(result_str) > 200:
-                    result_str = result_str[:200] + "..."
-                lines.append(f"   Result: {result_str}")
+                
+                # CRITICAL: Never truncate errors - they contain essential debugging information
+                if step.status == ActionStatus.FAILED or "error" in step.result or not step.result.get("success", True):
+                    lines.append(f"   Result: {result_str}")  # Full error, no truncation
+                
+                # For success results, use smart truncation
+                elif len(result_str) > 1000:
+                    # Truncate but hint where to find full details
+                    lines.append(f"   Result: {result_str[:1000]}... [truncated - see conversation history for full result]")
+                else:
+                    lines.append(f"   Result: {result_str}")
             
             if step.error:
                 lines.append(f"   Error: {step.error}")

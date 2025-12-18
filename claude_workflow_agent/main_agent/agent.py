@@ -73,7 +73,8 @@ class MainAgent:
             "list_mcp_tools",
             "read_workflow",
             "list_workflows",
-            "list_executor_sessions"
+            "list_executor_sessions",
+            "inspect_executor_session"  # Returns summary only, not full history
         }
         
         return tool_name not in AUTO_EXECUTE_TOOLS
