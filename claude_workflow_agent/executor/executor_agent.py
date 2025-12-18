@@ -193,7 +193,44 @@ class ExecutorAgent:
             session_id = previous_trace.get("session_id", f"exec_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
             
             # Restore message history
-            self.message_history = previous_trace.get("message_history", [])
+            raw_history = previous_trace.get("message_history", [])
+            
+            # IMPORTANT: Validate and clean message history
+            # Remove any trailing assistant messages with tool_use blocks that don't have corresponding tool_results
+            # This can happen if the session was saved right after a tool call but before adding the result
+            cleaned_history = []
+            for i, msg in enumerate(raw_history):
+                if msg.get("role") == "assistant":
+                    # Check if this assistant message has tool_use blocks
+                    content = msg.get("content", [])
+                    has_tool_use = any(
+                        block.get("type") == "tool_use" 
+                        for block in (content if isinstance(content, list) else [])
+                    )
+                    
+                    if has_tool_use:
+                        # Check if the next message is a user message with tool_result
+                        if i + 1 < len(raw_history):
+                            next_msg = raw_history[i + 1]
+                            if next_msg.get("role") == "user":
+                                next_content = next_msg.get("content", [])
+                                has_tool_result = any(
+                                    block.get("type") == "tool_result"
+                                    for block in (next_content if isinstance(next_content, list) else [])
+                                )
+                                if has_tool_result:
+                                    cleaned_history.append(msg)
+                                    continue
+                        # No tool_result found - skip this assistant message to fix the conversation
+                        logger.warning(f"Removing incomplete assistant message at index {i} (has tool_use but no tool_result)")
+                        continue
+                    
+                cleaned_history.append(msg)
+            
+            self.message_history = cleaned_history
+            
+            if len(cleaned_history) < len(raw_history):
+                logger.info(f"Cleaned message history: {len(raw_history)} -> {len(cleaned_history)} messages")
             
             # Restore trace with previous steps
             self.current_trace = ExecutionTrace(
@@ -358,6 +395,25 @@ class ExecutorAgent:
                 evaluation.get("reasoning", ""),
                 budget
             )
+            
+            # Add tool result to message history for proper conversation continuity
+            # This is critical for session restoration - ensures tool_use blocks have corresponding tool_result blocks
+            tool_use_id = action.get("tool_use_id")
+            if tool_use_id:
+                # Format the result for Claude API
+                if step_exec.status == ActionStatus.COMPLETED:
+                    result_content = json.dumps(step_exec.result) if step_exec.result else "Success"
+                else:
+                    result_content = f"Error: {step_exec.error}" if step_exec.error else "Failed"
+                
+                self.message_history.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": result_content
+                    }]
+                })
             
             # Always show step results
             status_icon = {
@@ -668,7 +724,8 @@ Explain your reasoning, then call the appropriate tool."""
                         "tool_name": tool,
                         "parameters": tool_input,
                         "description": response_text[:200] if response_text else f"Execute {tool}",
-                        "validation_checks": []
+                        "validation_checks": [],
+                        "tool_use_id": tool_use.id  # Save tool_use id for adding tool_result later
                     },
                     "clarification_request": None
                 }

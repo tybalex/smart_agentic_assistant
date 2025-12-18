@@ -32,24 +32,11 @@ async def list_mcp_servers() -> Dict[str, Any]:
             "total": int
         }
     """
-    global _registry_cache, _discovered_tools_cache
-    
     try:
-        # Check cache first
-        if _discovered_tools_cache:
-            return {
-                "success": True,
-                "servers": _discovered_tools_cache["servers"],
-                "total": len(_discovered_tools_cache["servers"])
-            }
-        
-        # Need to discover - create registry if needed
-        if not _registry_cache:
-            _registry_cache = await create_registry_from_config()
-        
-        # Discover to get server list
-        tools_by_server = await _registry_cache.discover_all_tools()
-        servers = list(tools_by_server.keys())
+        # Just read server names from config - no need to connect or discover tools
+        from tools.config import get_all_servers
+        server_configs = get_all_servers()
+        servers = list(server_configs.keys())
         
         return {
             "success": True,
@@ -720,9 +707,9 @@ async def execute_workflow(workflow_path: str, input_data: str = None, resume_se
         session_data = {
             "session_id": trace.session_id,
             "status": trace.status.value,
-            "timestamp": trace.timestamp,
-            "start_time": trace.start_time if hasattr(trace, 'start_time') else trace.timestamp,
-            "end_time": trace.end_time if hasattr(trace, 'end_time') else None,
+            "timestamp": trace.start_time,
+            "start_time": trace.start_time,
+            "end_time": trace.end_time,
             "workflow_path": str(workflow_file),
             "input_data": input_data,
             "steps": serialized_steps,
