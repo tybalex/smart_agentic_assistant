@@ -98,8 +98,8 @@ def main():
         if status == "completed":
             print("✅ Workflow completed successfully!")
             sys.exit(0)
-        elif status == "needs_clarification":
-            print("❓ Workflow needs clarification from user")
+        elif status == "waiting_for_input":
+            print("❓ Workflow waiting for user input")
             sys.exit(2)
         else:
             print(f"❌ Workflow failed: {trace.get('final_summary', 'Unknown error')}")

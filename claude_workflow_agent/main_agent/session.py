@@ -31,7 +31,7 @@ class ExecutionAttempt:
     """Record of a workflow execution attempt"""
     attempt_number: int
     timestamp: str
-    status: str  # "completed", "failed", "needs_clarification"
+    status: str  # "completed", "failed", "waiting_for_input", "awaiting_response"
     trace: Dict[str, Any]
     improvements_made: Optional[str] = None
 

@@ -16,8 +16,9 @@ MAX_TOOL_ROUNDS = 20  # Maximum number of tool call rounds per agent turn
 MAX_TOKENS_PER_REQUEST = 32000  # Maximum tokens for Claude API requests (streaming enabled)
 AGENT_TEMPERATURE = 0.1  # Temperature for agent responses (low for consistency)
 
-# Session
+# Executor Agent
 MAX_ITERATIONS = 100  # Maximum workflow execution iterations
+MAX_TOKEN_BUDGET = 10000000  # Maximum token budget for workflow execution
 
 
 # =============================================================================

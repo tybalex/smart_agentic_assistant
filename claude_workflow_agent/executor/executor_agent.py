@@ -17,10 +17,10 @@ from anthropic import Anthropic
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from constants import CLAUDE_MODEL
+from constants import CLAUDE_MODEL, MAX_ITERATIONS, MAX_TOKEN_BUDGET
 
 from .models import (
-    ExecutionTrace, StepExecution, ClarificationRequest,
+    ExecutionTrace, ActionExecution,
     SessionStatus, ActionStatus, ToolConfig, TokenBudget
 )
 
@@ -88,13 +88,12 @@ class ExecutorAgent:
         self.verbose = verbose
         
         # Check for API key
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
+        self.api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable not set")
         
-        self.client = Anthropic(api_key=api_key)
+        self.client = Anthropic(api_key=self.api_key)
         self.current_trace: Optional[ExecutionTrace] = None
-        self.input_data: Optional[str] = None  # Will be set by execute_workflow
     
     def _convert_tools_to_anthropic_format(self, tools_config: ToolConfig) -> List[Dict[str, Any]]:
         """
@@ -122,40 +121,69 @@ class ExecutorAgent:
                 "input_schema": input_schema
             })
         
-        # Add special control tools
-        anthropic_tools.append({
-            "name": "request_clarification",
-            "description": "Request clarification from the user when you need more information to proceed",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "The question to ask the user"
+        # Add special control tools for workflow lifecycle management
+        anthropic_tools.extend([
+            {
+                "name": "mark_workflow_complete",
+                "description": """Call this when ALL workflow steps are successfully completed and validated.
+                
+This signals SUCCESS and ends execution. Use when:
+- All required workflow steps have been executed
+- All validations passed
+- No errors or blockers remain
+- The workflow goals are fully achieved
+
+Provide a clear summary of what was accomplished.""",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "Concise summary of accomplished tasks (e.g., 'Created 3 accounts, sent 5 invitations, validated all members')"
+                        }
                     },
-                    "context": {
-                        "type": "string",
-                        "description": "Why you need this information"
-                    }
-                },
-                "required": ["question", "context"]
+                    "required": ["summary"]
+                }
+            },
+            {
+                "name": "request_user_input",
+                "description": """Call this when you need information or a decision from the user to proceed.
+Use when:
+- You need clarification about ambiguous workflow instructions
+- You need user to provide missing data/parameters
+- You need user to make a choice between multiple valid options
+- External manual action is required before you can continue
+
+IMPORTANT: Before calling this tool, explain your question/need in your reasoning. 
+The user will see your last message, so make it clear what you need.""",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "mark_workflow_blocked",
+                "description": """Call this when the workflow CANNOT proceed due to an unrecoverable error or blocker.
+This signals FAILURE and ends execution. Use when:
+- A critical tool/API is unavailable or broken
+- Required data is missing and cannot be obtained
+- Workflow has logical errors that prevent execution
+- You've exhausted all recovery options
+
+Do NOT use for temporary issues or things that need user input (use request_user_input instead).""",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Clear explanation of why the workflow is blocked and cannot proceed"
+                        }
+                    },
+                    "required": ["reason"]
+                }
             }
-        })
-        
-        anthropic_tools.append({
-            "name": "mark_workflow_complete",
-            "description": "Mark the workflow as complete when all steps are done and validated",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "Summary of what was accomplished"
-                    }
-                },
-                "required": ["summary"]
-            }
-        })
+        ])
         
         return anthropic_tools
     
@@ -266,32 +294,31 @@ class ExecutorAgent:
                 status=SessionStatus.ACTIVE,
             )
             
-            # Deserialize and restore previous steps
-            for step_data in previous_trace.get("steps", []):
-                step = StepExecution(
-                    step_number=step_data["step_number"],
-                    description=step_data.get("description", ""),
-                    status=ActionStatus(step_data["status"]),
-                    timestamp=step_data.get("timestamp", datetime.now().isoformat()),
-                    reasoning=step_data.get("reasoning"),
-                    tool_calls=step_data.get("tool_calls", []),
-                    result=step_data.get("result"),
-                    error=step_data.get("error")
+            # Deserialize and restore previous actions
+            for action_data in previous_trace.get("actions", []):
+                action = ActionExecution(
+                    action_number=action_data["action_number"],
+                    description=action_data.get("description", ""),
+                    status=ActionStatus(action_data["status"]),
+                    timestamp=action_data.get("timestamp", datetime.now().isoformat()),
+                    reasoning=action_data.get("reasoning"),
+                    tool_calls=action_data.get("tool_calls", []),
+                    result=action_data.get("result"),
+                    error=action_data.get("error")
                 )
-                self.current_trace.steps.append(step)
+                self.current_trace.actions.append(action)
             
-            # Restore clarification requests
-            for cr_data in previous_trace.get("clarification_requests", []):
-                cr = ClarificationRequest(
-                    question=cr_data["question"],
-                    context=cr_data.get("context", ""),
-                    step_number=cr_data.get("step_number", 0)
-                )
-                self.current_trace.clarification_requests.append(cr)
+            # If resuming with new input_data, inject it as a user message
+            # The executor will naturally see this and determine how to proceed
+            if input_data:
+                logger.info(f"Resuming session with new input_data: {input_data[:100]}...")
+                print(Colors.success(f"📝 Injecting user input into conversation..."))
+                self.message_history.append({
+                    "role": "user",
+                    "content": input_data
+                })
             
-            # Restore metadata
-            self.input_data = previous_trace.get("input_data")
-            starting_step = len(self.current_trace.steps) + 1
+            starting_action = len(self.current_trace.actions) + 1
             
             print(Colors.header(f"\n{'='*80}"))
             print(Colors.header(f"🔄 EXECUTOR AGENT: RESUMING WORKFLOW EXECUTION"))
@@ -299,8 +326,8 @@ class ExecutorAgent:
             print(Colors.executor(f"📁 Workflow: {workflow_path}"))
             print(Colors.executor(f"🔧 Tools: {len(tools_config.tools)} available"))
             print(Colors.executor(f"📂 Session: {session_id}"))
-            print(Colors.executor(f"📊 Previous steps: {len(self.current_trace.steps)} completed"))
-            print(Colors.executor(f"🎯 Resuming from step: {starting_step}"))
+            print(Colors.executor(f"📊 Previous actions: {len(self.current_trace.actions)} completed"))
+            print(Colors.executor(f"🎯 Resuming from action: {starting_action}"))
             if self.message_history:
                 print(Colors.executor(f"💬 Conversation history: {len(self.message_history)} messages restored"))
             print(Colors.header(f"{'='*80}\n"))
@@ -317,9 +344,16 @@ class ExecutorAgent:
                 status=SessionStatus.ACTIVE,
             )
             
-            # Store input data for use in prompts
-            self.input_data = input_data
-            starting_step = 1
+            # If input_data provided for initial execution, inject as first user message
+            if input_data:
+                logger.info(f"Starting workflow with input_data: {input_data[:100]}...")
+                print(Colors.success(f"📝 Initial input data provided"))
+                self.message_history.append({
+                    "role": "user",
+                    "content": input_data
+                })
+            
+            starting_action = 1
             
             # Always show execution start for new execution
             print(Colors.header(f"\n{'='*80}"))
@@ -332,9 +366,9 @@ class ExecutorAgent:
             print(Colors.header(f"{'='*80}\n"))
         
         # Main execution loop
-        step_number = starting_step
-        max_steps = 50  # Safety limit
-        budget = TokenBudget(max_tokens=180000)
+        action_number = starting_action
+        max_actions = MAX_ITERATIONS  # Safety limit (renamed from max_steps to avoid confusion with workflow steps)
+        budget = TokenBudget(max_tokens=MAX_TOKEN_BUDGET)
         
         # If resuming, restore token budget (approximate based on message history)
         if previous_trace and self.message_history:
@@ -346,22 +380,22 @@ class ExecutorAgent:
             budget.used_tokens = estimated_tokens
             print(Colors.executor(f"📊 Token budget restored: ~{estimated_tokens} tokens used previously\n"))
         
-        while step_number <= max_steps and not budget.exceeded:
-            logger.info(f"Executing step {step_number}")
+        while action_number <= max_actions and not budget.exceeded:
+            logger.info(f"Executing action {action_number}")
             
-            # Always show step progress
+            # Always show action progress
             print(Colors.executor(f"\n{'─'*80}"))
-            print(Colors.executor(f"📝 STEP {step_number}: Evaluating next action..."))
+            print(Colors.executor(f"📝 ACTION {action_number}: Evaluating next action..."))
             print(Colors.executor(f"{'─'*80}"))
             
             # Call LLM to decide next action (now with streaming and real-time output)
-            # Pass is_resuming=True only for the very first step after resume
-            is_first_resumed_step = (previous_trace is not None and step_number == starting_step)
-            evaluation = self._evaluate_next_step(
+            # Pass is_resuming=True only for the very first action after resume
+            is_first_resumed_action = (previous_trace is not None and action_number == starting_action)
+            evaluation = self._evaluate_next_action(
                 workflow_content,
                 tools_config,  # Pass tools_config instead of formatted string
                 budget,
-                is_resuming=is_first_resumed_step
+                is_resuming=is_first_resumed_action
             )
             
             # Check if goal achieved
@@ -376,130 +410,164 @@ class ExecutorAgent:
                 self.current_trace.final_summary = evaluation.get("reasoning", "Workflow completed successfully")
                 break
             
-            # Check for clarification request
-            clarification = evaluation.get("clarification_request")
-            if clarification:
-                logger.info(f"Executor needs clarification: {clarification.get('question')}")
-                print(Colors.warning(f"\n❓ EXECUTOR: CLARIFICATION NEEDED"))
-                print(Colors.warning(f"   Question: {clarification.get('question')}"))
-                print(Colors.warning(f"   Context: {clarification.get('context')}"))
-                self.current_trace.clarification_requests.append(
-                    ClarificationRequest(
-                        question=clarification.get("question", ""),
-                        context=clarification.get("context", ""),
-                        step_number=step_number
-                    )
-                )
-                self.current_trace.status = SessionStatus.NEEDS_CLARIFICATION
+            # Check if executor needs user input
+            if evaluation.get("needs_user_input", False):
+                logger.info("Executor requested user input")
+                print(Colors.warning(f"\n❓ EXECUTOR: WAITING FOR USER INPUT"))
+                print(Colors.warning(f"   The executor has paused and needs user input to proceed."))
+                print(Colors.warning(f"   Check the executor's last message for details on what is needed."))
+                print(Colors.warning(f"{'─'*80}\n"))
+                self.current_trace.status = SessionStatus.WAITING_FOR_INPUT
                 break
             
-            # Execute proposed action
-            action = evaluation.get("next_action")
-            if not action:
-                logger.warning("No action proposed")
-                print(Colors.error(f"\n❌ EXECUTOR ERROR: No action proposed by LLM"))
+            # Check if workflow is blocked
+            if evaluation.get("workflow_blocked"):
+                reason = evaluation.get("workflow_blocked", "Unknown blocker")
+                logger.error(f"Workflow blocked: {reason}")
+                print(Colors.error(f"\n❌ EXECUTOR: WORKFLOW BLOCKED"))
+                print(Colors.error(f"   Reason: {reason}"))
+                print(Colors.error(f"{'─'*80}\n"))
+                self.current_trace.status = SessionStatus.FAILED
+                self.current_trace.final_summary = f"Workflow blocked: {reason}"
+                break
+            
+            # Check if executor stopped naturally (edge case - no tool call)
+            if evaluation.get("awaiting_response", False):
+                logger.info("Executor stopped naturally without calling completion tool")
+                print(Colors.warning(f"\n⏸️  EXECUTOR: STOPPED WITH MESSAGE"))
+                print(Colors.warning(f"   The executor stopped without calling a completion tool."))
+                print(Colors.warning(f"   Returning control to Main Agent for review."))
+                print(Colors.warning(f"{'─'*80}\n"))
+                self.current_trace.status = SessionStatus.AWAITING_RESPONSE
+                self.current_trace.final_summary = evaluation.get("reasoning", "Executor stopped naturally")
+                break
+            
+            # Execute proposed actions (may be multiple tool calls in one response)
+            actions = evaluation.get("next_actions", [])
+            if not actions:
+                logger.warning("No actions proposed")
+                print(Colors.error(f"\n❌ EXECUTOR ERROR: No actions proposed by LLM"))
                 self.current_trace.status = SessionStatus.FAILED
                 self.current_trace.final_summary = evaluation.get("reasoning", "No action could be determined")
                 break
             
-            # Execute the action - always show what we're doing
-            print(Colors.executor(f"\n🔧 Executing action:"))
-            print(Colors.executor(f"   Tool: {action.get('tool_server')}/{action.get('tool_name')}"))
-            desc = action.get('description', '')
-            if desc and len(desc) > 150:
-                desc = desc[:150] + "..."
-            if desc:
-                print(Colors.executor(f"   Description: {desc}"))
-            params_str = json.dumps(action.get('parameters', {}), indent=2)
-            if len(params_str) > 300:
-                params_str = params_str[:300] + "..."
-            print(Colors.executor(f"   Parameters: {params_str}"))
+            # Execute all actions and collect results
+            tool_results_content = []  # Collect all tool results for a single user message
+            actions_executed = []
+            has_failure = False
             
-            step_exec = await self._execute_step(
-                step_number,
-                action,
-                evaluation.get("reasoning", ""),
-                budget
-            )
-            
-            # Add tool result to message history for proper conversation continuity
-            # This is critical for session restoration - ensures tool_use blocks have corresponding tool_result blocks
-            tool_use_id = action.get("tool_use_id")
-            if tool_use_id:
-                # Format the result for Claude API
-                if step_exec.status == ActionStatus.COMPLETED:
-                    result_content = json.dumps(step_exec.result) if step_exec.result else "Success"
+            for i, action in enumerate(actions):
+                # Show what we're doing
+                if len(actions) > 1:
+                    print(Colors.executor(f"\n🔧 Executing action {action_number} (batch {i+1}/{len(actions)}):"))
                 else:
-                    result_content = f"Error: {step_exec.error}" if step_exec.error else "Failed"
+                    print(Colors.executor(f"\n🔧 Executing action:"))
+                print(Colors.executor(f"   Tool: {action.get('tool_server')}/{action.get('tool_name')}"))
+                desc = action.get('description', '')
+                if desc and len(desc) > 150:
+                    desc = desc[:150] + "..."
+                if desc:
+                    print(Colors.executor(f"   Description: {desc}"))
+                params_str = json.dumps(action.get('parameters', {}), indent=2)
+                if len(params_str) > 300:
+                    params_str = params_str[:300] + "..."
+                print(Colors.executor(f"   Parameters: {params_str}"))
                 
-                self.message_history.append({
-                    "role": "user",
-                    "content": [{
+                # Execute the action
+                action_exec = await self._execute_action(
+                    action_number,
+                    action,
+                    evaluation.get("reasoning", ""),
+                    budget
+                )
+                
+                # Collect tool result for message history
+                tool_use_id = action.get("tool_use_id")
+                if tool_use_id:
+                    # Format the result for Claude API
+                    if action_exec.status == ActionStatus.COMPLETED:
+                        result_content = json.dumps(action_exec.result) if action_exec.result else "Success"
+                    else:
+                        result_content = f"Error: {action_exec.error}" if action_exec.error else "Failed"
+                    
+                    tool_results_content.append({
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
                         "content": result_content
-                    }]
+                    })
+                
+                # Always show action results
+                status_icon = {
+                    ActionStatus.COMPLETED: "✅",
+                    ActionStatus.FAILED: "❌",
+                    ActionStatus.PENDING: "⏳",
+                    ActionStatus.SKIPPED: "⊘"
+                }.get(action_exec.status, "❓")
+                
+                # Use different color based on status
+                if action_exec.status == ActionStatus.COMPLETED:
+                    status_msg = Colors.success(f"\n{status_icon} Action {action_number} Status: {action_exec.status.value}")
+                elif action_exec.status == ActionStatus.FAILED:
+                    status_msg = Colors.error(f"\n{status_icon} Action {action_number} Status: {action_exec.status.value}")
+                else:
+                    status_msg = Colors.executor(f"\n{status_icon} Action {action_number} Status: {action_exec.status.value}")
+                print(status_msg)
+                
+                if action_exec.result:
+                    result_str = json.dumps(action_exec.result, indent=2)
+                    if len(result_str) > 500:
+                        result_str = result_str[:500] + "..."
+                    print(Colors.executor(f"   Result: {result_str}"))
+                
+                if action_exec.error:
+                    print(Colors.error(f"   ❌ Error: {action_exec.error}"))
+                
+                if action_exec.validation_results:
+                    print(Colors.executor(f"   Validations:"))
+                    for v in action_exec.validation_results:
+                        v_icon = "✅" if v.get("passed") else "❌"
+                        if v.get("passed"):
+                            print(Colors.success(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
+                        else:
+                            print(Colors.error(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
+                
+                self.current_trace.actions.append(action_exec)
+                actions_executed.append(action_exec)
+                
+                # Check if action failed critically
+                if action_exec.status == ActionStatus.FAILED:
+                    has_failure = True
+                    logger.error(f"Action {action_number} failed: {action_exec.error}")
+                
+                action_number += 1
+            
+            # Add ALL tool results in a single user message (required by Claude API)
+            if tool_results_content:
+                self.message_history.append({
+                    "role": "user",
+                    "content": tool_results_content
                 })
             
-            # Always show step results
-            status_icon = {
-                ActionStatus.COMPLETED: "✅",
-                ActionStatus.FAILED: "❌",
-                ActionStatus.PENDING: "⏳",
-                ActionStatus.SKIPPED: "⊘"
-            }.get(step_exec.status, "❓")
-            
-            # Use different color based on status
-            if step_exec.status == ActionStatus.COMPLETED:
-                status_msg = Colors.success(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
-            elif step_exec.status == ActionStatus.FAILED:
-                status_msg = Colors.error(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
-            else:
-                status_msg = Colors.executor(f"\n{status_icon} Step {step_number} Status: {step_exec.status.value}")
-            print(status_msg)
-            
-            if step_exec.result:
-                result_str = json.dumps(step_exec.result, indent=2)
-                if len(result_str) > 500:
-                    result_str = result_str[:500] + "..."
-                print(Colors.executor(f"   Result: {result_str}"))
-            
-            if step_exec.error:
-                print(Colors.error(f"   ❌ Error: {step_exec.error}"))
-            
-            if step_exec.validation_results:
-                print(Colors.executor(f"   Validations:"))
-                for v in step_exec.validation_results:
-                    v_icon = "✅" if v.get("passed") else "❌"
-                    if v.get("passed"):
-                        print(Colors.success(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
-                    else:
-                        print(Colors.error(f"     {v_icon} {v.get('check')}: {v.get('message')}"))
-            
-            self.current_trace.steps.append(step_exec)
-            
-            # Check if step failed critically
-            if step_exec.status == ActionStatus.FAILED:
-                logger.error(f"Step {step_number} failed: {step_exec.error}")
+            # If any action failed, stop execution
+            if has_failure:
+                failed_action = [a for a in actions_executed if a.status == ActionStatus.FAILED][0]
                 print(Colors.error(f"\n{'='*80}"))
-                print(Colors.error(f"❌ EXECUTOR: WORKFLOW FAILED AT STEP {step_number}"))
+                print(Colors.error(f"❌ EXECUTOR: WORKFLOW FAILED AT ACTION {failed_action.action_number}"))
                 print(Colors.error(f"{'='*80}"))
-                print(Colors.error(f"Error: {step_exec.error}"))
+                print(Colors.error(f"Error: {failed_action.error}"))
                 print(Colors.error(f"{'='*80}\n"))
                 self.current_trace.status = SessionStatus.FAILED
-                self.current_trace.final_summary = f"Failed at step {step_number}: {step_exec.error}"
+                self.current_trace.final_summary = f"Failed at action {failed_action.action_number}: {failed_action.error}"
                 break
-            
-            step_number += 1
         
         # Handle timeout
-        if step_number > max_steps:
-            logger.warning(f"Reached max steps limit: {max_steps}")
+        if action_number > max_actions:
+            logger.warning(f"Reached max actions limit: {max_actions}")
             print(Colors.warning(f"\n{'='*80}"))
-            print(Colors.warning(f"⚠️  EXECUTOR: WORKFLOW TIMEOUT - Exceeded max steps ({max_steps})"))
+            print(Colors.warning(f"⚠️  EXECUTOR: WORKFLOW TIMEOUT - Exceeded max actions ({max_actions})"))
             print(Colors.warning(f"{'='*80}\n"))
             self.current_trace.status = SessionStatus.FAILED
-            self.current_trace.final_summary = f"Exceeded maximum steps ({max_steps})"
+            self.current_trace.final_summary = f"Exceeded maximum actions ({max_actions})"
         
         if budget.exceeded:
             logger.warning("Token budget exceeded")
@@ -515,14 +583,14 @@ class ExecutorAgent:
         logger.info(f"Workflow execution complete. Status: {self.current_trace.status.value}")
         
         # Always show final summary
-        completed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.COMPLETED)
-        failed = sum(1 for s in self.current_trace.steps if s.status == ActionStatus.FAILED)
+        completed = sum(1 for a in self.current_trace.actions if a.status == ActionStatus.COMPLETED)
+        failed = sum(1 for a in self.current_trace.actions if a.status == ActionStatus.FAILED)
         
         print(Colors.header(f"\n{'='*80}"))
         print(Colors.header(f"🏁 EXECUTOR AGENT: EXECUTION COMPLETE"))
         print(Colors.header(f"{'='*80}"))
         print(Colors.executor(f"Status: {self.current_trace.status.value}"))
-        print(Colors.executor(f"Total Steps: {len(self.current_trace.steps)}"))
+        print(Colors.executor(f"Total Actions: {len(self.current_trace.actions)}"))
         print(Colors.success(f"Completed: {completed}"))
         if failed > 0:
             print(Colors.error(f"Failed: {failed}"))
@@ -537,7 +605,7 @@ class ExecutorAgent:
         
         return self.current_trace
     
-    def _evaluate_next_step(
+    def _evaluate_next_action(
         self,
         workflow_content: str,
         tools_config: ToolConfig,
@@ -545,7 +613,7 @@ class ExecutorAgent:
         is_resuming: bool = False
     ) -> Dict[str, Any]:
         """
-        Ask LLM what to do next based on workflow and execution so far.
+        Ask LLM what action to take next based on workflow and execution so far.
         Uses native Claude API with tool calling (streaming for visibility).
         
         Args:
@@ -559,7 +627,12 @@ class ExecutorAgent:
         
         # Build system prompt with input data if provided
         system_prompt_parts = [
-            "You are an executor agent. Your job is to execute a workflow step-by-step.",
+            "You are an executor agent. Your job is to execute a workflow by taking actions (tool calls) to complete each workflow step.",
+            "",
+            "TERMINOLOGY:",
+            "- **Workflow Steps** = High-level phases defined in the workflow (e.g., 'Step 1: Salesforce Operations')",
+            "- **Executor Actions** = Individual tool calls you make (e.g., 'Action 1: Query Salesforce', 'Action 2: Create account')",
+            "- You may take multiple actions to complete one workflow step",
             "",
             "WORKFLOW TO EXECUTE:",
             "---",
@@ -567,34 +640,24 @@ class ExecutorAgent:
             "---"
         ]
         
-        # Add input data section if provided
-        if self.input_data:
-            system_prompt_parts.extend([
-                "",
-                "INPUT DATA FOR THIS WORKFLOW:",
-                "---",
-                self.input_data,
-                "---",
-                "",
-                "Use the input data above to fill in any variables or parameters needed by the workflow."
-            ])
-        
         system_prompt_parts.extend([
             "",
             "EXECUTION RULES:",
-            "1. Read the workflow carefully and execute it step by step",
-            "2. For each step, use ONE tool call to execute the action",
-            "3. Use the INPUT DATA to provide actual values when the workflow references variables",
-            "4. After each tool call, assess if the result matches the workflow's validation criteria",
-            "5. If you need clarification from the user, use request_clarification tool",
-            "6. When all steps are complete and validated, use mark_workflow_complete tool",
+            "1. Read the workflow carefully and work through each workflow step",
+            "2. For each action, use ONE tool call to perform the operation",
+            "3. The user may provide input data (parameters, context, or clarification responses) via messages",
+            "4. Use any user-provided data to fill in variables or parameters needed by the workflow",
+            "5. After each tool call, assess if the result matches the workflow's validation criteria",
+            "6. If you need clarification from the user, use request_user_input tool",
+            "7. When all workflow steps are complete and validated, use mark_workflow_complete tool",
             "",
             "IMPORTANT:",
-            "- Execute steps sequentially - one step at a time",
+            "- Work through workflow steps sequentially",
             "- ALWAYS explain your reasoning before calling a tool",
-            "- Use actual values from INPUT DATA section when workflow mentions variables",
+            "- Use actual values from user messages when workflow mentions variables or parameters",
+            "- When you request user input and the user responds, determine if the response answers your question(s)",
             "- Validate results according to the Validation section in workflow",
-            "- If stuck or need user input, call request_clarification",
+            "- If stuck or need user input, call request_user_input",
             "",
             "ABOUT TOOL RESULTS:",
             "- Your conversation history contains FULL tool_use and tool_result blocks with complete details",
@@ -606,16 +669,18 @@ class ExecutorAgent:
         system_prompt = "\n".join(system_prompt_parts)
 
         # Build messages based on whether we're resuming or starting fresh
-        if is_resuming and self.message_history:
+        if is_resuming and len(self.message_history) > 1:  # More than just initial input
             # Resuming: Use the full conversation history + a continuation message
             history_str = self._format_execution_history()
             continuation_msg = f"""Continue workflow execution.
 
-EXECUTION SUMMARY (overview of completed steps):
+EXECUTION SUMMARY (overview of completed actions):
 {history_str}
 
 Note: This is a summary. Full tool results are in the conversation history above. 
-If you need complete details from any step, refer to the tool_result blocks in the conversation.
+If you need complete details from any action, refer to the tool_result blocks in the conversation.
+
+If the user provided new input above (e.g., clarification response), evaluate whether it answers any outstanding questions you had.
 
 ---
 
@@ -625,7 +690,7 @@ Explain your reasoning, then call the appropriate tool."""
             
             messages = self.message_history + [{"role": "user", "content": continuation_msg}]
         else:
-            # Fresh start: Build initial user message
+            # Fresh start or first action: Use message history (may include initial input_data) + prompt
             history_str = self._format_execution_history()
             user_message = f"""EXECUTION SUMMARY:
 {history_str}
@@ -634,9 +699,12 @@ Explain your reasoning, then call the appropriate tool."""
 
 Based on the workflow above and execution so far, what should we do next?
 
+If the user provided input data above, use it to fill in any variables or parameters the workflow needs.
+
 Explain your reasoning, then call the appropriate tool."""
             
-            messages = [{"role": "user", "content": user_message}]
+            # Include any existing message history (e.g., initial input_data user message)
+            messages = self.message_history + [{"role": "user", "content": user_message}]
 
         # Use streaming API with tools
         print(Colors.executor("\n💭 Executor reasoning..."))
@@ -672,12 +740,8 @@ Explain your reasoning, then call the appropriate tool."""
             final_message = stream.get_final_message()
             
             # Save user message to history (the last message in our messages list)
-            if not is_resuming:
-                # Fresh execution - save the user message we just created
-                self.message_history.append(messages[0])
-            else:
-                # Resuming - save the continuation message
-                self.message_history.append(messages[-1])
+            # Whether fresh execution or resuming, we always append the last message (the new user prompt)
+            self.message_history.append(messages[-1])
             
             # Save assistant response to history
             assistant_content = []
@@ -714,75 +778,109 @@ Explain your reasoning, then call the appropriate tool."""
         
         # Process tool calls
         if not tool_uses:
-            # No tool call - might be just thinking
+            # No tool call - executor stopped without explicit completion tool
+            # This is the edge case: return "awaiting_response" signal
             return {
                 "reasoning": response_text,
                 "goal_achieved": False,
-                "next_action": None,
-                "clarification_request": None
+                "next_actions": [],
+                "awaiting_response": True  # Signal that executor stopped naturally
             }
         
-        # Handle tool calls
-        tool_use = tool_uses[0]  # Take first tool call
-        tool_name = tool_use.name
-        tool_input = tool_use.input
+        # Handle tool calls - now supporting multiple tool calls
+        # First, scan ALL tools to check if any are special control tools
+        # Control tools take priority and should be used alone
+        control_tool = None
+        control_tool_input = None
         
-        # Check for special control tools
-        if tool_name == "request_clarification":
+        for tool_use in tool_uses:
+            if tool_use.name in ["request_user_input", "mark_workflow_complete", "mark_workflow_blocked"]:
+                control_tool = tool_use.name
+                control_tool_input = tool_use.input
+                break  # Found a control tool, prioritize it
+        
+        # If we found a control tool, handle it (ignoring any other tools)
+        if control_tool == "request_user_input":
+            # Executor needs user input - pause execution
+            logger.info("Control tool detected: request_user_input")
+            if len(tool_uses) > 1:
+                logger.warning(f"Multiple tools called but request_user_input takes priority. Ignoring {len(tool_uses) - 1} other tools.")
             return {
                 "reasoning": response_text,
                 "goal_achieved": False,
-                "next_action": None,
-                "clarification_request": {
-                    "question": tool_input.get("question", ""),
-                    "context": tool_input.get("context", "")
-                }
+                "next_actions": [],
+                "needs_user_input": True
             }
         
-        elif tool_name == "mark_workflow_complete":
+        elif control_tool == "mark_workflow_complete":
+            # Workflow successfully completed
+            logger.info("Control tool detected: mark_workflow_complete")
+            if len(tool_uses) > 1:
+                logger.warning(f"Multiple tools called but mark_workflow_complete takes priority. Ignoring {len(tool_uses) - 1} other tools.")
             return {
-                "reasoning": tool_input.get("summary", response_text),
+                "reasoning": control_tool_input.get("summary", response_text),
                 "goal_achieved": True,
-                "next_action": None,
-                "clarification_request": None
+                "next_actions": []
             }
         
-        else:
-            # Regular MCP tool call - parse server__tool format
+        elif control_tool == "mark_workflow_blocked":
+            # Workflow is blocked and cannot proceed
+            logger.info("Control tool detected: mark_workflow_blocked")
+            if len(tool_uses) > 1:
+                logger.warning(f"Multiple tools called but mark_workflow_blocked takes priority. Ignoring {len(tool_uses) - 1} other tools.")
+            return {
+                "reasoning": response_text,
+                "goal_achieved": False,
+                "next_actions": [],
+                "workflow_blocked": control_tool_input.get("reason", "Workflow blocked")
+            }
+        
+        # No control tools found - process all regular MCP tool calls
+        next_actions = []
+        for tool_use in tool_uses:
+            tool_name = tool_use.name
+            tool_input = tool_use.input
+            
+            # Parse server__tool format
             if "__" in tool_name:
                 server, tool = tool_name.split("__", 1)
-                return {
-                    "reasoning": response_text,
-                    "goal_achieved": False,
-                    "next_action": {
-                        "tool_server": server,
-                        "tool_name": tool,
-                        "parameters": tool_input,
-                        "description": response_text[:200] if response_text else f"Execute {tool}",
-                        "validation_checks": [],
-                        "tool_use_id": tool_use.id  # Save tool_use id for adding tool_result later
-                    },
-                    "clarification_request": None
-                }
+                next_actions.append({
+                    "tool_server": server,
+                    "tool_name": tool,
+                    "parameters": tool_input,
+                    "description": response_text[:200] if response_text else f"Execute {tool}",
+                    "validation_checks": [],
+                    "tool_use_id": tool_use.id  # Save tool_use id for adding tool_result later
+                })
             else:
                 raise ValueError(f"Invalid tool name format: {tool_name}")
+        
+        if len(next_actions) > 1:
+            logger.info(f"Processing batch of {len(next_actions)} tool calls")
+        
+        return {
+            "reasoning": response_text,
+            "goal_achieved": False,
+            "next_actions": next_actions,  # Return list of actions
+            "awaiting_response": False  # Not awaiting response for regular tool calls
+        }
     
-    async def _execute_step(
+    async def _execute_action(
         self,
-        step_number: int,
+        action_number: int,
         action: Dict[str, Any],
         reasoning: str,
         budget: TokenBudget
-    ) -> StepExecution:
-        """Execute a single workflow step with validation"""
+    ) -> ActionExecution:
+        """Execute a single workflow action (one tool call) with validation"""
         tool_server = action.get("tool_server", "")
         tool_name = action.get("tool_name", "")
         parameters = action.get("parameters", {})
-        description = action.get("description", f"Step {step_number}")
+        description = action.get("description", f"Action {action_number}")
         validation_checks = action.get("validation_checks", [])
         
-        step_exec = StepExecution(
-            step_number=step_number,
+        action_exec = ActionExecution(
+            action_number=action_number,
             description=description,
             status=ActionStatus.PENDING,
             timestamp=datetime.now().isoformat(),
@@ -817,32 +915,32 @@ Explain your reasoning, then call the appropriate tool."""
             
             print(Colors.executor(f"   ✓ Tool execution returned"))
             
-            step_exec.result = result
+            action_exec.result = result
             
             # Validate result if checks provided
             if validation_checks and result:
                 validation_results = self._run_validations(result, validation_checks)
-                step_exec.validation_results = validation_results
+                action_exec.validation_results = validation_results
                 
                 # Check if any validation failed
                 failed_validations = [v for v in validation_results if not v.get("passed", False)]
                 if failed_validations:
-                    step_exec.status = ActionStatus.FAILED
-                    step_exec.error = f"Validation failed: {failed_validations[0].get('message')}"
+                    action_exec.status = ActionStatus.FAILED
+                    action_exec.error = f"Validation failed: {failed_validations[0].get('message')}"
                 else:
-                    step_exec.status = ActionStatus.COMPLETED
+                    action_exec.status = ActionStatus.COMPLETED
             else:
                 # No validation or no result
-                step_exec.status = ActionStatus.COMPLETED
+                action_exec.status = ActionStatus.COMPLETED
             
-            logger.info(f"Step {step_number} completed with status: {step_exec.status.value}")
+            logger.info(f"Action {action_number} completed with status: {action_exec.status.value}")
             
         except Exception as e:
-            logger.error(f"Step {step_number} failed: {e}", exc_info=True)
-            step_exec.status = ActionStatus.FAILED
-            step_exec.error = str(e)
+            logger.error(f"Action {action_number} failed: {e}", exc_info=True)
+            action_exec.status = ActionStatus.FAILED
+            action_exec.error = str(e)
         
-        return step_exec
+        return action_exec
     
     def _run_validations(
         self,
@@ -889,31 +987,31 @@ Explain your reasoning, then call the appropriate tool."""
         return validation_results
     
     def _format_execution_history(self) -> str:
-        """Format current execution trace for LLM context"""
-        if not self.current_trace or not self.current_trace.steps:
-            return "No steps executed yet."
+        """Format current execution trace for LLM context (summary of completed actions)"""
+        if not self.current_trace or not self.current_trace.actions:
+            return "No actions executed yet."
         
         lines = []
-        for step in self.current_trace.steps:
+        for action in self.current_trace.actions:
             status_icon = {
                 ActionStatus.COMPLETED: "✓",
                 ActionStatus.FAILED: "✗",
                 ActionStatus.PENDING: "◌",
                 ActionStatus.SKIPPED: "⊘"
-            }.get(step.status, "?")
+            }.get(action.status, "?")
             
-            lines.append(f"{status_icon} Step {step.step_number}: {step.description}")
+            lines.append(f"{status_icon} Action {action.action_number}: {action.description}")
             
-            if step.tool_calls:
-                tool_call = step.tool_calls[0]
+            if action.tool_calls:
+                tool_call = action.tool_calls[0]
                 lines.append(f"   Tool: {tool_call.get('server')}/{tool_call.get('tool')}")
                 lines.append(f"   Params: {json.dumps(tool_call.get('parameters', {}))}")
             
-            if step.result:
-                result_str = json.dumps(step.result)
+            if action.result:
+                result_str = json.dumps(action.result)
                 
                 # CRITICAL: Never truncate errors - they contain essential debugging information
-                if step.status == ActionStatus.FAILED or "error" in step.result or not step.result.get("success", True):
+                if action.status == ActionStatus.FAILED or "error" in action.result or not action.result.get("success", True):
                     lines.append(f"   Result: {result_str}")  # Full error, no truncation
                 
                 # For success results, use smart truncation
@@ -923,12 +1021,12 @@ Explain your reasoning, then call the appropriate tool."""
                 else:
                     lines.append(f"   Result: {result_str}")
             
-            if step.error:
-                lines.append(f"   Error: {step.error}")
+            if action.error:
+                lines.append(f"   Error: {action.error}")
             
-            if step.validation_results:
+            if action.validation_results:
                 lines.append(f"   Validations:")
-                for v in step.validation_results:
+                for v in action.validation_results:
                     v_icon = "✓" if v.get("passed") else "✗"
                     lines.append(f"     {v_icon} {v.get('check')}: {v.get('message')}")
             

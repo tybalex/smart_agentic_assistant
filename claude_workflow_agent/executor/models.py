@@ -14,7 +14,8 @@ class SessionStatus(str, Enum):
     ACTIVE = "active"
     COMPLETED = "completed"
     FAILED = "failed"
-    NEEDS_CLARIFICATION = "needs_clarification"
+    WAITING_FOR_INPUT = "waiting_for_input"  # Executor called request_user_input() - needs user to provide input/decision
+    AWAITING_RESPONSE = "awaiting_response"  # Executor stopped with message but didn't call explicit completion tool
 
 
 class ActionStatus(str, Enum):
@@ -44,9 +45,9 @@ class WorkflowStep:
 
 
 @dataclass
-class StepExecution:
-    """Record of a single step execution"""
-    step_number: int
+class ActionExecution:
+    """Record of a single executor action execution (one tool call)"""
+    action_number: int  # Renamed from step_number to avoid confusion with workflow steps
     description: str
     status: ActionStatus
     timestamp: str
@@ -57,12 +58,7 @@ class StepExecution:
     validation_results: List[Dict[str, Any]] = field(default_factory=list)
 
 
-@dataclass
-class ClarificationRequest:
-    """A request for clarification from the executor"""
-    question: str
-    context: str
-    step_number: Optional[int] = None
+# The executor's last message contains any questions/context naturally
 
 
 @dataclass
@@ -73,8 +69,7 @@ class ExecutionTrace:
     start_time: str
     status: SessionStatus
     end_time: Optional[str] = None
-    steps: List[StepExecution] = field(default_factory=list)
-    clarification_requests: List[ClarificationRequest] = field(default_factory=list)
+    actions: List[ActionExecution] = field(default_factory=list)  # Renamed from steps
     final_summary: Optional[str] = None
     
     def to_json(self) -> Dict[str, Any]:
@@ -85,27 +80,19 @@ class ExecutionTrace:
             "start_time": self.start_time,
             "end_time": self.end_time,
             "status": self.status.value,
-            "steps": [
+            "actions": [
                 {
-                    "step_number": step.step_number,
-                    "description": step.description,
-                    "status": step.status.value,
-                    "timestamp": step.timestamp,
-                    "reasoning": step.reasoning,
-                    "tool_calls": step.tool_calls,
-                    "result": step.result,
-                    "error": step.error,
-                    "validation_results": step.validation_results,
+                    "action_number": action.action_number,
+                    "description": action.description,
+                    "status": action.status.value,
+                    "timestamp": action.timestamp,
+                    "reasoning": action.reasoning,
+                    "tool_calls": action.tool_calls,
+                    "result": action.result,
+                    "error": action.error,
+                    "validation_results": action.validation_results,
                 }
-                for step in self.steps
-            ],
-            "clarification_requests": [
-                {
-                    "question": req.question,
-                    "context": req.context,
-                    "step_number": req.step_number,
-                }
-                for req in self.clarification_requests
+                for action in self.actions
             ],
             "final_summary": self.final_summary,
         }

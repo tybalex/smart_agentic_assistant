@@ -468,13 +468,16 @@ async def list_executor_sessions(workflow_path: str) -> Dict[str, Any]:
             try:
                 with open(session_file, 'r') as f:
                     session_data = json.load(f)
+                    actions_list = session_data.get("actions", [])
+                    status = session_data.get("status")
+                    
                     sessions.append({
                         "session_id": session_data.get("session_id"),
-                        "status": session_data.get("status"),
+                        "status": status,
                         "timestamp": session_data.get("timestamp"),
-                        "total_steps": len(session_data.get("steps", [])),
-                        "completed_steps": sum(1 for s in session_data.get("steps", []) if s.get("status") == "completed"),
-                        "needs_clarification": bool(session_data.get("clarification_requests"))
+                        "total_actions": len(actions_list),
+                        "completed_actions": sum(1 for a in actions_list if a.get("status") == "completed"),
+                        "needs_user_input": status in ["waiting_for_input", "awaiting_response"]
                     })
             except Exception as e:
                 print(f"⚠️  Error reading session {session_file.name}: {e}")
@@ -498,7 +501,7 @@ async def inspect_executor_session(workflow_path: str, session_id: str) -> Dict[
     """
     Inspect a saved executor session and return a SUMMARY for debugging.
     
-    Returns session status, step summaries (with errors), and clarifications.
+    Returns session status, action summaries (with errors), and executor's last message if waiting for input.
     Does NOT return full conversation history (too large).
     
     Args:
@@ -506,7 +509,7 @@ async def inspect_executor_session(workflow_path: str, session_id: str) -> Dict[
         session_id: Session ID to inspect
     
     Returns:
-        Dict with session summary (status, steps, errors, clarifications)
+        Dict with session summary (status, actions, errors, executor_last_message)
         Does NOT include full conversation history (too large for tool result)
     """
     try:
@@ -524,41 +527,60 @@ async def inspect_executor_session(workflow_path: str, session_id: str) -> Dict[
             session_data = json.load(f)
         
         # Return only the useful summary data, NOT the full conversation history
-        steps_summary = []
-        for step in session_data.get("steps", []):
-            step_info = {
-                "step_number": step["step_number"],
-                "description": step["description"],
-                "status": step["status"],
-                "reasoning": step.get("reasoning", "")[:200] if step.get("reasoning") else None,  # Truncate long reasoning
+        actions_list = session_data.get("actions", [])
+        actions_summary = []
+        for action in actions_list:
+            action_info = {
+                "action_number": action["action_number"],
+                "description": action["description"],
+                "status": action["status"],
+                "reasoning": action.get("reasoning", "")[:200] if action.get("reasoning") else None,  # Truncate long reasoning
             }
             
             # Include errors (never truncate)
-            if step.get("error"):
-                step_info["error"] = step["error"]
+            if action.get("error"):
+                action_info["error"] = action["error"]
             
             # Include result summary (truncate large results)
-            if step.get("result"):
-                result_str = json.dumps(step["result"])
+            if action.get("result"):
+                result_str = json.dumps(action["result"])
                 if len(result_str) > 500:
-                    step_info["result_summary"] = result_str[:500] + "... [truncated]"
+                    action_info["result_summary"] = result_str[:500] + "... [truncated]"
                 else:
-                    step_info["result"] = step["result"]
+                    action_info["result"] = action["result"]
             
-            steps_summary.append(step_info)
+            actions_summary.append(action_info)
+        
+        status = session_data.get("status")
+        
+        # Provide context if executor needs user input
+        executor_context = None
+        if status in ["waiting_for_input", "awaiting_response"]:
+            # Get the last message from message_history to see what executor said
+            message_history = session_data.get("message_history", [])
+            if message_history:
+                last_msg = message_history[-1]
+                if last_msg.get("role") == "assistant":
+                    # Extract text content from last assistant message
+                    content = last_msg.get("content", "")
+                    if isinstance(content, list):
+                        text_parts = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
+                        executor_context = "\n".join(text_parts)
+                    elif isinstance(content, str):
+                        executor_context = content
         
         return {
             "success": True,
             "session_id": session_data.get("session_id"),
-            "status": session_data.get("status"),
+            "status": status,
             "start_time": session_data.get("start_time"),
             "end_time": session_data.get("end_time"),
             "workflow_path": session_data.get("workflow_path"),
-            "total_steps": session_data.get("total_steps", len(steps_summary)),
-            "completed_steps": session_data.get("completed_steps", 0),
-            "failed_steps": session_data.get("failed_steps", 0),
-            "steps": steps_summary,  # Summary only, not full details
-            "clarification_requests": session_data.get("clarification_requests", []),
+            "total_actions": session_data.get("total_actions", len(actions_summary)),
+            "completed_actions": session_data.get("completed_actions", 0),
+            "failed_actions": session_data.get("failed_actions", 0),
+            "actions": actions_summary,  # Summary only, not full details
+            "executor_last_message": executor_context if executor_context else "No context available",
             "final_summary": session_data.get("final_summary"),
             # NOTE: message_history is intentionally excluded (too large - can be 40k+ tokens)
             # If you need to resume, use execute_workflow(resume_session_id=...) instead
@@ -655,47 +677,40 @@ async def execute_workflow(workflow_path: str, input_data: str = None, resume_se
         success = trace.status == SessionStatus.COMPLETED
         
         # Build result with meaningful information
-        completed_steps = sum(1 for s in trace.steps if s.status == ActionStatus.COMPLETED)
-        failed_steps = sum(1 for s in trace.steps if s.status == ActionStatus.FAILED)
+        completed_actions = sum(1 for a in trace.actions if a.status == ActionStatus.COMPLETED)
+        failed_actions = sum(1 for a in trace.actions if a.status == ActionStatus.FAILED)
         
         result = {
             "success": success,
             "status": trace.status.value,
             "session_id": trace.session_id,
-            "total_steps": len(trace.steps),
-            "completed_steps": completed_steps,
-            "failed_steps": failed_steps,
-            "trace_summary": f"Executed {len(trace.steps)} steps, {completed_steps} succeeded"
+            "total_actions": len(trace.actions),
+            "completed_actions": completed_actions,
+            "failed_actions": failed_actions,
+            "trace_summary": f"Executed {len(trace.actions)} actions, {completed_actions} succeeded"
         }
         
-        # Include clarification requests if workflow needs input
-        if trace.clarification_requests:
-            result["clarification_requests"] = [
-                {
-                    "question": cr.question,
-                    "context": cr.context,
-                    "step_number": cr.step_number
-                }
-                for cr in trace.clarification_requests
-            ]
+        # If status indicates executor needs input, provide context from last message
+        if trace.status.value in ["waiting_for_input", "awaiting_response"]:
+            result["executor_message"] = "Check the executor's last message in the conversation for details on what is needed."
         
         # Include final summary if available
         if trace.final_summary:
             result["final_summary"] = trace.final_summary
         
-        # Include full step details (not truncated) for Main Agent to analyze
-        if trace.steps:
-            result["steps"] = [
+        # Include full action details (not truncated) for Main Agent to analyze
+        if trace.actions:
+            result["actions"] = [
                 {
-                    "step": s.step_number,
-                    "description": s.description,  # Full description, not truncated
-                    "status": s.status.value,
-                    "reasoning": s.reasoning if hasattr(s, 'reasoning') else None,
-                    "tool_calls": s.tool_calls if hasattr(s, 'tool_calls') else [],
-                    "result": s.result if hasattr(s, 'result') else None,
-                    "error": s.error
+                    "action": a.action_number,
+                    "description": a.description,  # Full description, not truncated
+                    "status": a.status.value,
+                    "reasoning": a.reasoning if hasattr(a, 'reasoning') else None,
+                    "tool_calls": a.tool_calls if hasattr(a, 'tool_calls') else [],
+                    "result": a.result if hasattr(a, 'result') else None,
+                    "error": a.error
                 }
-                for s in trace.steps
+                for a in trace.actions
             ]
         
         # Save session to workflow directory with full state for resume
@@ -704,27 +719,18 @@ async def execute_workflow(workflow_path: str, input_data: str = None, resume_se
         
         session_file = sessions_dir / f"{trace.session_id}.json"
         
-        # Serialize steps with all details for proper restoration
-        serialized_steps = []
-        for step in trace.steps:
-            serialized_steps.append({
-                "step_number": step.step_number,
-                "description": step.description,
-                "status": step.status.value,
-                "reasoning": step.reasoning if hasattr(step, 'reasoning') else None,
-                "tool_calls": step.tool_calls if hasattr(step, 'tool_calls') else [],
-                "result": step.result if hasattr(step, 'result') else None,
-                "error": step.error,
-                "timestamp": step.timestamp
-            })
-        
-        # Serialize clarification requests
-        serialized_clarifications = []
-        for cr in trace.clarification_requests:
-            serialized_clarifications.append({
-                "question": cr.question,
-                "context": cr.context,
-                "step_number": cr.step_number
+        # Serialize actions with all details for proper restoration
+        serialized_actions = []
+        for action in trace.actions:
+            serialized_actions.append({
+                "action_number": action.action_number,
+                "description": action.description,
+                "status": action.status.value,
+                "reasoning": action.reasoning if hasattr(action, 'reasoning') else None,
+                "tool_calls": action.tool_calls if hasattr(action, 'tool_calls') else [],
+                "result": action.result if hasattr(action, 'result') else None,
+                "error": action.error,
+                "timestamp": action.timestamp
             })
         
         # Get message history from executor
@@ -766,21 +772,19 @@ async def execute_workflow(workflow_path: str, input_data: str = None, resume_se
             "start_time": trace.start_time,
             "end_time": trace.end_time,
             "workflow_path": str(workflow_file),
-            "input_data": input_data,
-            "steps": serialized_steps,
-            "clarification_requests": serialized_clarifications,
+            "actions": serialized_actions,
             "final_summary": trace.final_summary if hasattr(trace, 'final_summary') else result.get("final_summary"),
-            "completed_steps": result["completed_steps"],
-            "failed_steps": result["failed_steps"],
-            "total_steps": result["total_steps"],
-            "message_history": message_history  # Full conversation history for resume
+            "completed_actions": result["completed_actions"],
+            "failed_actions": result["failed_actions"],
+            "total_actions": result["total_actions"],
+            "message_history": message_history  # Full conversation history including all user inputs
         }
         
         with open(session_file, 'w') as f:
             json.dump(session_data, f, indent=2)
         
         print(f"💾 Session saved: {session_file}")
-        print(f"   📊 Saved {len(serialized_steps)} steps, {len(message_history)} messages")
+        print(f"   📊 Saved {len(serialized_actions)} actions, {len(message_history)} messages")
         result["session_file"] = str(session_file)
         
         return result
@@ -964,7 +968,7 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "execute_workflow",
-        "description": "Execute workflow with Executor Agent from scratch or resume a previous session. Returns detailed execution results. Sessions are automatically saved to the workflow's .sessions/ directory for potential resume. Input data is optional, but if not provided, you should warn the user before executing the workflow.",
+        "description": "Execute workflow with Executor Agent from scratch or resume a previous session. Returns detailed execution results. Sessions are automatically saved to the workflow's .sessions/ directory for potential resume. IMPORTANT: If status is 'waiting_for_input' or 'awaiting_response', check the executor_message or inspect the session to see what the executor needs, then provide the response in input_data when resuming. The executor will naturally process the response and continue. Input data is optional for new executions, but if not provided, you should warn the user before executing the workflow.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -974,11 +978,11 @@ ANTHROPIC_TOOLS = [
                 },
                 "input_data": {
                     "type": "string",
-                    "description": "Optional input data for the workflow. Can be structured data (JSON, key-value pairs) or free-form text with context/variables the workflow needs (e.g., company details, IDs, configuration). If the user provided input files with @, include that content here."
+                    "description": "Optional input data for the workflow. For NEW executions: structured data (JSON, key-value pairs) or free-form text with context/variables the workflow needs. For RESUMING executions: provide user's response to what the executor needs (check executor_message or inspect session). The executor will naturally evaluate the response and determine how to proceed. If the user provided input files with @, include that content here."
                 },
                 "resume_session_id": {
                     "type": "string",
-                    "description": "Optional: Session ID to resume from a previous execution. Use list_executor_sessions() to see available sessions. If provided, continues from where that session left off."
+                    "description": "Optional: Session ID to resume from a previous execution. Use list_executor_sessions() to see available sessions. If provided, continues from where that session left off. If the session needs clarification, provide the answer in input_data."
                 }
             },
             "required": ["workflow_path"]
@@ -986,7 +990,7 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "list_executor_sessions",
-        "description": "List saved executor sessions for a workflow. Shows session history including status, step counts, and whether clarification is needed. Use this to see what sessions can be resumed.",
+        "description": "List saved executor sessions for a workflow. Shows session history including status, action counts, and whether executor needs user input. Use this to see what sessions can be resumed. 'needs_user_input=true' means executor is waiting for user response.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1000,7 +1004,7 @@ ANTHROPIC_TOOLS = [
     },
     {
         "name": "inspect_executor_session",
-        "description": "Inspect a saved executor session for debugging. Returns a SUMMARY with session status, step summaries (with full errors), and clarification requests. Does NOT return full conversation history (too large for tool result). Use this to analyze what happened in a past execution. If you want to RESUME a session, use execute_workflow(resume_session_id=...) instead.",
+        "description": "Inspect a saved executor session for debugging. Returns a SUMMARY with session status, action summaries (with full errors), and executor_last_message if executor is waiting for user input. Does NOT return full conversation history (too large for tool result). Use this to analyze what happened in a past execution. If you want to RESUME a session, use execute_workflow(resume_session_id=...) instead.",
         "input_schema": {
             "type": "object",
             "properties": {
