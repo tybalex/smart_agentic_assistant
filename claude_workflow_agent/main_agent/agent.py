@@ -79,6 +79,29 @@ class MainAgent:
         
         return tool_name not in AUTO_EXECUTE_TOOLS
     
+    def _make_api_call(self, messages: List[Dict[str, Any]]):
+        """
+        Make a streaming API call to Claude with standard parameters.
+        
+        Args:
+            messages: List of message dicts to send
+            
+        Returns:
+            The final message response from Claude
+        """
+        session_context = self._format_session_context()
+        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
+        
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=MAX_TOKENS_PER_REQUEST,
+            temperature=AGENT_TEMPERATURE,
+            system=system_prompt,
+            messages=messages,
+            tools=ANTHROPIC_TOOLS,
+        ) as stream:
+            return stream.get_final_message()
+    
     async def chat(self, user_message: str) -> Dict[str, Any]:
         """
         Process user message and respond using native Anthropic tool calling.
@@ -101,20 +124,8 @@ class MainAgent:
         # Build conversation context
         messages = self.session.get_conversation_context()
         
-        # Add session context to help agent avoid redundant actions
-        session_context = self._format_session_context()
-        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
-        
-        # Use streaming for large token requests
-        with self.client.messages.stream(
-            model=self.model,
-            max_tokens=MAX_TOKENS_PER_REQUEST,
-            temperature=AGENT_TEMPERATURE,
-            system=system_prompt,
-            messages=messages,
-            tools=ANTHROPIC_TOOLS,
-        ) as stream:
-            response = stream.get_final_message()
+        # Make API call
+        response = self._make_api_call(messages)
         
         # Debug in dev mode
         if self.dev_mode:
@@ -232,18 +243,7 @@ class MainAgent:
                     }
                 
                 # All tools were auto-executed, continue conversation
-                session_context = self._format_session_context()
-                system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
-                
-                with self.client.messages.stream(
-                    model=self.model,
-                    max_tokens=MAX_TOKENS_PER_REQUEST,
-                    temperature=AGENT_TEMPERATURE,
-                    system=system_prompt,
-                    messages=messages,
-                    tools=ANTHROPIC_TOOLS,
-                ) as stream:
-                    next_response = stream.get_final_message()
+                next_response = self._make_api_call(messages)
                 
                 # Process the next response recursively
                 # Check if it has more tool calls
@@ -263,6 +263,7 @@ class MainAgent:
                     
                     # Check if any need approval
                     new_needs_approval = [t for t in new_tool_uses if self._requires_approval(t.name)]
+                    new_auto_execute = [t for t in new_tool_uses if not self._requires_approval(t.name)]
                     
                     if new_needs_approval:
                         self.session.pending_assistant_content = new_assistant_content
@@ -284,8 +285,112 @@ class MainAgent:
                             "tool_calls": tool_calls
                         }
                     
-                    # More auto tools - would need recursive handling
-                    # For simplicity, fall through to text response
+                    elif new_auto_execute:
+                        # More auto-executable tools - handle them recursively
+                        # Add new assistant message with tool_use blocks
+                        messages.append({
+                            "role": "assistant",
+                            "content": new_assistant_content
+                        })
+                        self.session.add_assistant_message(content=new_assistant_content)
+                        
+                        # Execute auto tools and collect results
+                        new_tool_results_content = []
+                        for tool_use in new_auto_execute:
+                            # Show in dev mode
+                            if self.dev_mode:
+                                self._print_dev_tool_call({
+                                    "tool": tool_use.name,
+                                    "arguments": tool_use.input,
+                                    "id": tool_use.id
+                                })
+                            
+                            # Execute tool
+                            result = await self._execute_tool(tool_use.name, tool_use.input)
+                            
+                            # Show result in dev mode
+                            if self.dev_mode:
+                                self._print_dev_tool_result(tool_use.name, result)
+                            
+                            # Format for API
+                            new_tool_results_content.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use.id,
+                                "content": json.dumps(result)
+                            })
+                        
+                        # Add tool results to messages
+                        messages.append({
+                            "role": "user",
+                            "content": new_tool_results_content
+                        })
+                        self.session.add_user_message(content=new_tool_results_content)
+                        
+                        # Continue conversation with another API call
+                        final_response = self._make_api_call(messages)
+                        
+                        # Recursively handle the final response
+                        # Extract content and determine type
+                        if final_response.stop_reason == "tool_use":
+                            # Yet more tool calls - handle them
+                            final_text = ""
+                            final_tool_uses = []
+                            final_assistant_content = []
+                            
+                            for block in final_response.content:
+                                if block.type == "text":
+                                    final_text += block.text
+                                    final_assistant_content.append(block)
+                                elif block.type == "tool_use":
+                                    final_tool_uses.append(block)
+                                    final_assistant_content.append(block)
+                            
+                            # Check if any need approval
+                            final_needs_approval = [t for t in final_tool_uses if self._requires_approval(t.name)]
+                            
+                            if final_needs_approval:
+                                self.session.pending_assistant_content = final_assistant_content
+                                
+                                tool_calls = []
+                                for tool_use in final_needs_approval:
+                                    tool_calls.append({
+                                        "tool": tool_use.name,
+                                        "arguments": tool_use.input,
+                                        "id": tool_use.id
+                                    })
+                                
+                                return {
+                                    "type": "tool_calls",
+                                    "content": final_text,
+                                    "tool_calls": tool_calls
+                                }
+                            else:
+                                # All auto tools again - for now just extract text
+                                # (to avoid infinite recursion, limit depth here)
+                                final_text_response = ""
+                                for block in final_response.content:
+                                    if block.type == "text":
+                                        final_text_response += block.text
+                                
+                                self.session.add_assistant_message(content=final_text_response if final_text_response else final_assistant_content)
+                                
+                                return {
+                                    "type": "text",
+                                    "content": final_text_response if final_text_response else "Completed multiple tool executions."
+                                }
+                        else:
+                            # Final text response
+                            final_text_response = ""
+                            for block in final_response.content:
+                                if block.type == "text":
+                                    final_text_response += block.text
+                            
+                            self.session.add_assistant_message(content=final_text_response)
+                            
+                            return {
+                                "type": "text",
+                                "content": final_text_response
+                            }
                 
                 # Final text response
                 response_text = ""
@@ -445,18 +550,7 @@ class MainAgent:
         self.session.pending_assistant_content = None
         
         # Get next response from model
-        session_context = self._format_session_context()
-        system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
-        
-        with self.client.messages.stream(
-            model=self.model,
-            max_tokens=MAX_TOKENS_PER_REQUEST,
-            temperature=AGENT_TEMPERATURE,
-            system=system_prompt,
-            messages=messages,
-            tools=ANTHROPIC_TOOLS,
-        ) as stream:
-            response = stream.get_final_message()
+        response = self._make_api_call(messages)
         
         # Check if model wants more tools
         if response.stop_reason == "tool_use":
@@ -584,18 +678,7 @@ class MainAgent:
             })
             
             # Continue conversation
-            session_context = self._format_session_context()
-            system_prompt = MAIN_AGENT_SYSTEM_PROMPT + "\n\n" + session_context
-            
-            with self.client.messages.stream(
-                model=self.model,
-                max_tokens=MAX_TOKENS_PER_REQUEST,
-                temperature=AGENT_TEMPERATURE,
-                system=system_prompt,
-                messages=messages,
-                tools=ANTHROPIC_TOOLS,
-            ) as stream:
-                final_response = stream.get_final_message()
+            final_response = self._make_api_call(messages)
             
             # Process final response (might have more tool calls)
             if final_response.stop_reason == "tool_use":
@@ -614,6 +697,7 @@ class MainAgent:
                 
                 # Check which need approval
                 new_needs_approval = [t for t in new_tool_uses if self._requires_approval(t.name)]
+                new_auto_execute = [t for t in new_tool_uses if not self._requires_approval(t.name)]
                 
                 if new_needs_approval:
                     self.session.pending_assistant_content = new_assistant_content
@@ -633,6 +717,63 @@ class MainAgent:
                         "type": "tool_calls",
                         "content": new_text,
                         "tool_calls": tool_calls
+                    }
+                
+                elif new_auto_execute:
+                    # More auto-executable tools - execute them recursively
+                    # Add assistant message with tool_use blocks
+                    messages.append({
+                        "role": "assistant",
+                        "content": new_assistant_content
+                    })
+                    self.session.add_assistant_message(content=new_assistant_content)
+                    
+                    # Execute auto tools and collect results
+                    new_tool_results_content = []
+                    for tool_use in new_auto_execute:
+                        # Show in dev mode
+                        if self.dev_mode:
+                            self._print_dev_tool_call({
+                                "tool": tool_use.name,
+                                "arguments": tool_use.input,
+                                "id": tool_use.id
+                            })
+                        
+                        # Execute tool
+                        result = await self._execute_tool(tool_use.name, tool_use.input)
+                        
+                        # Show result in dev mode
+                        if self.dev_mode:
+                            self._print_dev_tool_result(tool_use.name, result)
+                        
+                        # Format for API
+                        new_tool_results_content.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use.id,
+                            "content": json.dumps(result)
+                        })
+                    
+                    # Add tool results to messages
+                    messages.append({
+                        "role": "user",
+                        "content": new_tool_results_content
+                    })
+                    self.session.add_user_message(content=new_tool_results_content)
+                    
+                    # Continue conversation with another API call
+                    continuation_response = self._make_api_call(messages)
+                    
+                    # Extract final text response
+                    continuation_text = ""
+                    for block in continuation_response.content:
+                        if block.type == "text":
+                            continuation_text += block.text
+                    
+                    self.session.add_assistant_message(content=continuation_text if continuation_text else continuation_response.content)
+                    
+                    return {
+                        "type": "text",
+                        "content": continuation_text if continuation_text else "Completed tool executions."
                     }
             
             # Final text response
